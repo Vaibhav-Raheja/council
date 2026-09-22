@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+# council — route a task to the right model, or convene several and settle it.
+set -uo pipefail
+
+# Respect a caller-supplied COUNCIL_HOME so an alternate provider/policy tree can
+# be swapped in (the test suite does this to run against stubs). Falls back to
+# the directory this script lives in.
+COUNCIL_HOME="${COUNCIL_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+export COUNCIL_HOME
+. "$COUNCIL_HOME/lib/common.sh"
+. "$COUNCIL_HOME/lib/registry.sh"
+. "$COUNCIL_HOME/lib/policy.sh"
+. "$COUNCIL_HOME/lib/consensus.sh"
+
+usage() {
+  cat <<'USAGE'
+council — several AI CLIs, hard rules about who does what.
+
+  council ask <question>       convene a panel, detect disagreement, settle it
+  council raw <question>       panel answers verbatim, no judging
+  council review <file>...     review files (contents are fed in)
+  council explore <dir> <q>    hand a repo to a model that reads it itself
+  council <provider> <q>       call one provider directly (e.g. council codex ...)
+
+  council providers            registered providers, capabilities, availability
+  council roles                what each provider is best at
+  council rules                the enforced routing rules
+  council doctor               installation + live auth check
+  council install              set up this machine
+
+Options
+  -m <model>    model for a single-provider call
+  -n <count>    advisors to convene (capped by max-advisors)
+  -C <dir>      working directory handed to explore-capable providers
+
+Questions may arrive on stdin:  cat notes.md | council ask "summarise"
+
+Env
+  COUNCIL_MAX_HOPS   recursion ceiling for self-invocation (default 2)
+  COUNCIL_DEBUG=1    log routing decisions to stderr
+  <NAME>_BIN         override binary discovery for a provider
+USAGE
+}
+
+read_question() {
+  local q piped
+  q="$*"
+  if [ ! -t 0 ]; then
+    piped="$(cat)"
+    if [ -n "$q" ] && [ -n "$piped" ]; then
+      q="$q
+---
+$piped"
+    elif [ -z "$q" ]; then
+      q="$piped"
+    fi
+  fi
+  [ -n "$q" ] || { echo "council: no question given" >&2; exit 2; }
+  printf '%s' "$q"
+}
+
+# Fan out to a panel in parallel. Populates COUNCIL_ANSWER_FILES.
+convene() {
+  local qfile id f pids p
+  qfile="$1"; shift
+  COUNCIL_ANSWER_FILES=()
+  pids=""
+  for id in "$@"; do
+    f="$(mktemp)"
+    COUNCIL_ANSWER_FILES+=("$f")
+    ( council_invoke "$id" "$MODEL" "$DIR" < "$qfile" > "$f" 2>/dev/null ) &
+    pids="$pids $!"
+  done
+  for p in $pids; do wait "$p" 2>/dev/null; done
+}
+
+answered_count() {
+  local f n
+  n=0
+  for f in "${COUNCIL_ANSWER_FILES[@]:-}"; do
+    council_has_content "$f" && n=$(( n + 1 ))
+  done
+  echo "$n"
+}
+
+cleanup_answers() {
+  [ "${#COUNCIL_ANSWER_FILES[@]}" -gt 0 ] && rm -f "${COUNCIL_ANSWER_FILES[@]}"
+  return 0
+}
+
+cmd_ask() {
+  local q qfile panel n verdict arb out f RESERVED
+  q="$(read_question "$@")"
+  # The reserved judge is held out of the panel so someone remains eligible to
+  # arbitrate and break ties without grading their own answer.
+  RESERVED="$(council_policy_reserved_judge 2>/dev/null || true)"
+  panel="$(council_policy_panel advise "$AGENTS" $RESERVED | tr '\n' ' ')" || exit 2
+  council_log "panel: $panel (reserved judge: ${RESERVED:-none})"
+
+  qfile="$(mktemp)"; printf '%s' "$q" > "$qfile"
+  convene "$qfile" $panel
+
+  n="$(answered_count)"
+  if [ "$n" -eq 0 ]; then
+    echo "council: no advisor produced an answer. Run: council doctor" >&2
+    rm -f "$qfile"; cleanup_answers; exit 5
+  fi
+  if [ "$n" -eq 1 ]; then
+    council_warn "only one advisor answered; reporting it unjudged"
+    for f in "${COUNCIL_ANSWER_FILES[@]}"; do
+      council_has_content "$f" && cat "$f"
+    done
+    rm -f "$qfile"; cleanup_answers; exit 0
+  fi
+
+  arb="$(mktemp)"
+  verdict="$(council_arbitrate "$qfile" "$arb" $panel)"
+  council_log "verdict: $verdict"
+
+  out="$(mktemp)"
+  if [ "$verdict" = "AGREE" ]; then
+    if council_synthesize "$qfile" "$out" $panel; then
+      cat "$out"
+    else
+      council_warn "synthesis failed; raw answers follow"
+      council_render_answers "${COUNCIL_ANSWER_FILES[@]}"
+    fi
+  else
+    echo "## Stalemate — escalating to a model that was not in the room"
+    echo
+    if [ -s "$arb" ]; then
+      echo "Point of contention, per the arbiter:"
+      sed -n '2,6p' "$arb"
+      echo
+    fi
+    if council_tiebreak "$qfile" "$arb" "$out" $panel; then
+      echo "### Binding verdict"
+      echo
+      cat "$out"
+    else
+      council_warn "no eligible tiebreaker; presenting both positions unresolved"
+      council_render_answers "${COUNCIL_ANSWER_FILES[@]}"
+    fi
+  fi
+  rm -f "$qfile" "$arb" "$out"; cleanup_answers
+}
+
+cmd_raw() {
+  local q qfile panel id i f RESERVED
+  q="$(read_question "$@")"
+  RESERVED="$(council_policy_reserved_judge 2>/dev/null || true)"
+  panel="$(council_policy_panel advise "$AGENTS" $RESERVED | tr '\n' ' ')" || exit 2
+  qfile="$(mktemp)"; printf '%s' "$q" > "$qfile"
+  convene "$qfile" $panel
+  i=0
+  for id in $panel; do
+    echo "===== $(council_provider_meta "$id" PROVIDER_LABEL) ====="
+    f="${COUNCIL_ANSWER_FILES[$i]}"
+    if council_has_content "$f"; then cat "$f"; else echo "(no answer)"; fi
+    echo
+    i=$(( i + 1 ))
+  done
+  rm -f "$qfile"; cleanup_answers
+}
+
+cmd_provider() {
+  local id q
+  id="$1"; shift
+  q="$(read_question "$@")"
+  printf '%s' "$q" | council_invoke "$id" "$MODEL" "$DIR"
+}
+
+cmd_review() {
+  local tmp f
+  [ $# -gt 0 ] || { echo "council: review needs at least one file" >&2; exit 2; }
+  tmp="$(mktemp)"
+  {
+    echo "Review the following file(s). Name real bugs, robustness gaps and"
+    echo "simplifications. Be specific and terse. Skip praise."
+    for f in "$@"; do
+      [ -f "$f" ] || { echo "council: no such file: $f" >&2; exit 2; }
+      echo
+      echo "----- FILE: $f -----"
+      cat "$f"
+    done
+  } > "$tmp"
+  cmd_ask < "$tmp"
+  rm -f "$tmp"
+}
+
+cmd_explore() {
+  local dir q id
+  dir="$1"; shift
+  [ -d "$dir" ] || { echo "council: not a directory: $dir" >&2; exit 2; }
+  q="$(read_question "$@")"
+  id="$(council_policy_select explore | head -1)"
+  if [ -z "$id" ]; then
+    echo "council: no installed provider declares the 'explore' capability." >&2
+    echo "council: see 'council providers'." >&2
+    exit 2
+  fi
+  council_log "explore -> $id"
+  printf '%s' "$q" | council_invoke "$id" "$MODEL" "$dir"
+}
+
+cmd_providers() {
+  local id bin st
+  printf '%-10s %-28s %-13s %-10s %s\n' ID LABEL ROLE STATUS CAPABILITIES
+  for id in $(council_provider_ids); do
+    if bin="$(council_provider_bin "$id" 2>/dev/null)"; then st="installed"; else st="MISSING"; fi
+    printf '%-10s %-28s %-13s %-10s %s\n' \
+      "$id" \
+      "$(council_provider_meta "$id" PROVIDER_LABEL)" \
+      "$(council_provider_meta "$id" PROVIDER_ROLE)" \
+      "$st" \
+      "$(council_provider_meta "$id" PROVIDER_CAPS)"
+  done
+}
+
+cmd_roles() {
+  local id
+  for id in $(council_provider_ids); do
+    echo "### $(council_provider_meta "$id" PROVIDER_LABEL)  [$id]"
+    echo "role: $(council_provider_meta "$id" PROVIDER_ROLE)"
+    echo "caps: $(council_provider_meta "$id" PROVIDER_CAPS)"
+    echo
+    council_provider_meta "$id" PROVIDER_SUMMARY
+    echo
+    echo
+  done
+}
+
+cmd_rules() { sed 's/^/  /' "$(council_rules_file)"; }
+
+cmd_doctor() {
+  local id bin out
+  echo "council doctor — $(council_os), hop limit $(council_max_hops)"
+  echo "rules: $(council_rules_file)"
+  echo
+  for id in $(council_provider_ids); do
+    if bin="$(council_provider_bin "$id" 2>/dev/null)"; then
+      printf '  %-10s found    %s\n' "$id" "$bin"
+    else
+      printf '  %-10s MISSING  %s\n' "$id" "$(council_provider_meta "$id" PROVIDER_AUTH_HINT)"
+    fi
+  done
+  echo
+  echo "live check (each must answer PONG):"
+  for id in $(council_provider_ids); do
+    if ! council_provider_available "$id"; then
+      printf '  %-10s skipped (not installed)\n' "$id"
+      continue
+    fi
+    out="$(printf 'Reply with exactly: PONG' | council_invoke "$id" "" "" 2>/dev/null)"
+    case "$out" in
+      *PONG*) printf '  %-10s OK\n' "$id" ;;
+      *)      printf '  %-10s FAILED — %s\n' "$id" "$(council_provider_meta "$id" PROVIDER_AUTH_HINT)" ;;
+    esac
+  done
+  echo
+  echo "panel that 'council ask' would convene:"
+  council_policy_panel advise "" "$(council_policy_reserved_judge 2>/dev/null || true)" 2>/dev/null | sed 's/^/  /' || echo "  (policy unsatisfied)"
+}
+
+MODEL=""; DIR=""; AGENTS=""
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m|--model)  [ $# -ge 2 ] || council_die "-m requires a value"; MODEL="$2"; shift 2 ;;
+    -n|--agents) [ $# -ge 2 ] || council_die "-n requires a value"; AGENTS="$2"; shift 2 ;;
+    -C|--dir)    [ $# -ge 2 ] || council_die "-C requires a value"; DIR="$2";   shift 2 ;;
+    -h|--help)   usage; exit 0 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+if [ "${#ARGS[@]}" -gt 0 ]; then set -- "${ARGS[@]}"; else set --; fi
+
+council_depth_guard council
+
+case "${1:-}" in
+  ask)       shift; cmd_ask "$@" ;;
+  raw)       shift; cmd_raw "$@" ;;
+  review)    shift; cmd_review "$@" ;;
+  explore)   shift; [ $# -ge 1 ] || council_die "explore needs a directory"; cmd_explore "$@" ;;
+  providers) cmd_providers ;;
+  roles)     cmd_roles ;;
+  rules)     cmd_rules ;;
+  doctor)    cmd_doctor ;;
+  install)   exec "$COUNCIL_HOME/install.sh" ;;
+  ""|help)   usage ;;
+  *)
+    if council_provider_file "$1" >/dev/null 2>&1; then
+      id="$1"; shift; cmd_provider "$id" "$@"
+    else
+      echo "council: unknown command or provider '$1'" >&2
+      usage
+      exit 2
+    fi
+    ;;
+esac
