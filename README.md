@@ -30,7 +30,7 @@ tiebreaker who cannot vote on their own opinion.
 ## Install
 
 ```sh
-git clone https://github.com/<you>/council ~/council
+git clone https://github.com/Vaibhav-Raheja/council.git ~/council
 ~/council/install.sh
 ```
 
