@@ -41,6 +41,18 @@ check "recursion refused past the hop limit" "$rc" "3"
   && ok "whitespace-only output is not an answer" \
   || bad "whitespace-only output is not an answer"
 
+# A copy of the script separated from its repo must say so, not emit a cascade
+# of "command not found" from every missing helper.
+detached="$(mktemp -d)"
+cp "$REPO/council" "$detached/council"; chmod +x "$detached/council"
+out="$(env -u COUNCIL_HOME "$detached/council" doctor 2>&1)"; rc=$?
+rm -rf "$detached"
+if [ "$rc" = "4" ] && case "$out" in *"cannot find the council library"*) true ;; *) false ;; esac; then
+  ok "detached script fails loudly with a clear cause"
+else
+  bad "detached script fails loudly" "rc=$rc out=$(echo "$out" | head -1)"
+fi
+
 # ---------------------------------------------------------------- registry
 echo
 echo "registry"

@@ -3,10 +3,33 @@
 set -uo pipefail
 
 # Respect a caller-supplied COUNCIL_HOME so an alternate provider/policy tree can
-# be swapped in (the test suite does this to run against stubs). Falls back to
-# the directory this script lives in.
-COUNCIL_HOME="${COUNCIL_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# be swapped in (the test suite does this to run against stubs). Otherwise derive
+# it from this script's location, following symlinks: a PATH entry is often a
+# link into the repo, and dirname of the LINK would point at ~/.local/bin, which
+# has no lib/.
+if [ -z "${COUNCIL_HOME:-}" ]; then
+  _self="${BASH_SOURCE[0]}"
+  while [ -L "$_self" ]; do
+    _target="$(readlink "$_self")"
+    case "$_target" in
+      /*) _self="$_target" ;;
+      *)  _self="$(dirname "$_self")/$_target" ;;
+    esac
+  done
+  COUNCIL_HOME="$(cd "$(dirname "$_self")" && pwd)"
+  unset _self _target
+fi
 export COUNCIL_HOME
+
+# Fail loudly. Without this a missing lib/ produces a cascade of
+# "command not found" from every helper, which hides the real cause.
+if [ ! -f "$COUNCIL_HOME/lib/common.sh" ]; then
+  echo "council: cannot find the council library." >&2
+  echo "council: expected $COUNCIL_HOME/lib/common.sh" >&2
+  echo "council: this copy of the script is detached from its repo." >&2
+  echo "council: set COUNCIL_HOME to the checkout, or re-run install.sh there." >&2
+  exit 4
+fi
 . "$COUNCIL_HOME/lib/common.sh"
 . "$COUNCIL_HOME/lib/registry.sh"
 . "$COUNCIL_HOME/lib/policy.sh"
