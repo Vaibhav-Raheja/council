@@ -59,6 +59,14 @@ council doctor                  # installation and live auth check
 
 Questions can arrive on stdin: `cat notes.md | council ask "summarise"`.
 
+## Or never type it at all
+
+`integrations/claude-code/` wires the council to convene ITSELF inside Claude
+Code — on a decision with real stakes, a review request, or an architectural
+choice that would be expensive to reverse. `install.sh` offers to set this up.
+Without it the CLI still works; you just have to remember to run it, which in
+practice means it gets built and never used.
+
 ## Providers are data, not code
 
 A provider is one `.conf` file. Adding an LLM never means editing the engine:

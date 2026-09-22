@@ -120,7 +120,35 @@ else
   echo "     Install another provider, or lower min-advisors in policy/rules.conf."
 fi
 
-# ------------------------------------------------------------------ 5. verify
+# ------------------------------------------------------- 5. agent integration
+step "Assistant integration (optional)"
+INTEG="$COUNCIL_HOME/integrations/claude-code"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+if [ -d "$INTEG" ] && [ -d "$CLAUDE_DIR" ]; then
+  echo "   Claude Code detected at $CLAUDE_DIR."
+  echo "   This wires the council to convene ITSELF, so you never type 'council'."
+  if [ -f "$CLAUDE_DIR/skills/council/SKILL.md" ]; then
+    echo "   skill already installed — refreshing it"
+    mkdir -p "$CLAUDE_DIR/skills/council"
+    cp "$INTEG/SKILL.md" "$CLAUDE_DIR/skills/council/SKILL.md"
+  elif ask_yes "Install the auto-invoke skill into $CLAUDE_DIR/skills/council?"; then
+    mkdir -p "$CLAUDE_DIR/skills/council"
+    cp "$INTEG/SKILL.md" "$CLAUDE_DIR/skills/council/SKILL.md" &&
+      echo "   installed the skill"
+  fi
+  if grep -q "^# Multi-model council" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
+    echo "   CLAUDE.md already carries the council rules — leaving it alone"
+  elif ask_yes "Append the routing rules to $CLAUDE_DIR/CLAUDE.md?"; then
+    printf '\n' >> "$CLAUDE_DIR/CLAUDE.md"
+    cat "$INTEG/CLAUDE.md.snippet" >> "$CLAUDE_DIR/CLAUDE.md" &&
+      echo "   appended the rules"
+  fi
+else
+  echo "   Claude Code not detected — skipping."
+  echo "   See integrations/claude-code/README.md to wire another assistant."
+fi
+
+# ------------------------------------------------------------------ 6. verify
 step "Live check"
 "$COUNCIL_HOME/council" doctor | sed -n '/live check/,$p' | sed 's/^/   /'
 

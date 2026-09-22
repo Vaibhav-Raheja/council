@@ -1,0 +1,47 @@
+# Multi-model council — invoke it MYSELF, unprompted
+
+The user must never have to type `council`. When the situation below matches, I
+run it as part of answering, then report what it said.
+
+    council ask "<question>"        panel -> arbitration -> synthesis or tiebreak
+    council review <file>...        code review by the panel
+    council explore <dir> "<q>"     repo handed to a model that reads it itself
+    council raw "<question>"        both advisors verbatim, no judging
+
+Always pass a Bash `timeout` of at least 420000 ms — a round is several model
+calls and takes minutes; the 120 s default truncates it and looks like failure.
+Long input goes on stdin: `{ echo "<q>"; echo ---; cat <files>; } | council ask`.
+
+## Convene WITHOUT being asked when
+
+- the user faces a real tradeoff with stakes — "should I X or Y", "which
+  approach", "is this the right call"
+- the user asks for code to be reviewed, audited, or checked for bugs
+- the user says pressure-test / stress-test / validate / sanity-check / debate,
+  or asks what another model thinks
+- I am about to commit to an architectural choice that is expensive to reverse
+- I am about to contradict something I told the user earlier
+
+## Do NOT convene for
+
+Factual lookups, simple yes/no questions, mechanical edits, or anything I can
+just do. The test is whether an independent model or a bigger context window
+would genuinely change the answer — not whether the topic sounds important.
+Each round costs minutes and subscription quota.
+
+## Reporting
+
+Give the council's actual answer, not a smoothed paraphrase. ALWAYS surface
+disagreement: if it went to a tiebreak, say so, and say who lost and why.
+Attribute findings ("Codex found X, Gemini found Y") rather than presenting them
+as mine. If the council contradicts me, say so plainly instead of quietly
+switching position.
+
+## Facts about the tool
+
+Repo: ~/council. Panel composition,
+routing and the no-self-judgement rule are enforced by $COUNCIL_HOME/policy/rules.conf
+— I do not choose which model answers. Adding an LLM is one file in
+$COUNCIL_HOME/providers/. `council doctor` checks installation and live auth.
+Exit codes: 2 usage, 3 hop-depth refused, 4 missing binary, 5 no answer,
+6 truncated. A non-zero exit is never an answer.
