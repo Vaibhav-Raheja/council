@@ -52,7 +52,7 @@ council — several AI CLIs, hard rules about who does what.
   council install              set up this machine
 
 Options
-  -m <model>    model for a single-provider call
+  -m <model>    model for a single-provider call (refused by ask/raw/review)
   -n <count>    advisors to convene (capped by max-advisors)
   -C <dir>      working directory handed to explore-capable providers
 
@@ -60,6 +60,10 @@ Questions may arrive on stdin:  cat notes.md | council ask "summarise"
 
 Env
   COUNCIL_MAX_HOPS   recursion ceiling for self-invocation (default 2)
+  COUNCIL_SKIP_FINAL=1  skip the final reviewer; the judge's decision stands
+  COUNCIL_CALL_TIMEOUT  per-model-call limit in seconds (default 240, 0 = none)
+  COUNCIL_ROUND_TIMEOUT soft whole-round deadline for ask/raw (default 540, 0 = none)
+  COUNCIL_KILL_GRACE    seconds between SIGTERM and SIGKILL on timeout (default 10)
   COUNCIL_DEBUG=1    log routing decisions to stderr
   <NAME>_BIN         override binary discovery for a provider
 USAGE
@@ -89,9 +93,12 @@ convene() {
   COUNCIL_ANSWER_FILES=()
   pids=""
   for id in "$@"; do
-    f="$(mktemp)"
+    # Named for the provider: council_render_answers labels each answer by its
+    # filename, and the judges need to know who said what.
+    f="$(mktemp "${TMPDIR:-/tmp}/$id.XXXXXX")"
     COUNCIL_ANSWER_FILES+=("$f")
-    ( council_invoke "$id" "$MODEL" "$DIR" < "$qfile" > "$f" 2>/dev/null ) &
+    # stderr is kept: a timeout or auth failure must be visible, not silent.
+    ( council_invoke "$id" "$MODEL" "$DIR" < "$qfile" > "$f" ) &
     pids="$pids $!"
   done
   for p in $pids; do wait "$p" 2>/dev/null; done
@@ -111,14 +118,38 @@ cleanup_answers() {
   return 0
 }
 
+# -m names ONE model. On a multi-provider round it would be handed to every
+# advisor (a Claude alias to codex, say), so it is refused rather than misapplied.
+refuse_model_for_panel() {
+  [ -z "$MODEL" ] && return 0
+  echo "council: -m applies to a single-provider call (council <provider> -m ...);" >&2
+  echo "council: pin panel models with PROVIDER_DEFAULT_MODEL in providers/<id>.conf" >&2
+  exit 2
+}
+
+# Pick one judge for <task> from outside <panel>. Final reviewers are kept out
+# of the earlier judging roles when anyone else can fill them, so a provider
+# that declares tiebreak AND final is not used up before the final call.
+#   pick_judge <task> <panel...>
+pick_judge() {
+  local task finals
+  task="$1"; shift
+  finals="$(council_providers_with_cap final | tr '\n' ' ')"
+  council_policy_judge "$task" "$@" $finals 2>/dev/null ||
+    council_policy_judge "$task" "$@" 2>/dev/null || true
+}
+
 cmd_ask() {
-  local q qfile panel n verdict arb out f RESERVED
+  local q qfile panel n verdict arb out fin RESERVED ARBITER FINAL TB decision f
+  refuse_model_for_panel
+  council_preflight_warnings
   q="$(read_question "$@")"
-  # The reserved judge is held out of the panel so someone remains eligible to
-  # arbitrate and break ties without grading their own answer.
-  RESERVED="$(council_policy_reserved_judge 2>/dev/null || true)"
+  council_start_round_clock
+  # Held out of the panel: the reserved judge and every final reviewer, so each
+  # stays eligible to judge without grading its own answer.
+  RESERVED="$(council_policy_reserved | tr '\n' ' ')"
   panel="$(council_policy_panel advise "$AGENTS" $RESERVED | tr '\n' ' ')" || exit 2
-  council_log "panel: $panel (reserved judge: ${RESERVED:-none})"
+  council_log "panel: $panel (held out: ${RESERVED:-none})"
 
   qfile="$(mktemp)"; printf '%s' "$q" > "$qfile"
   convene "$qfile" $panel
@@ -128,50 +159,92 @@ cmd_ask() {
     echo "council: no advisor produced an answer. Run: council doctor" >&2
     rm -f "$qfile"; cleanup_answers; exit 5
   fi
+
+  arb="$(mktemp)"; out="$(mktemp)"; fin="$(mktemp)"
+  ARBITER=""; TB=""; decision=""
   if [ "$n" -eq 1 ]; then
-    council_warn "only one advisor answered; reporting it unjudged"
-    for f in "${COUNCIL_ANSWER_FILES[@]}"; do
-      council_has_content "$f" && cat "$f"
-    done
-    rm -f "$qfile"; cleanup_answers; exit 0
+    council_warn "only one advisor answered; nothing to arbitrate"
+    verdict=SINGLE
+  else
+    ARBITER="$(pick_judge arbitrate $panel)"
+    verdict="$(council_arbitrate "$ARBITER" "$qfile" "$arb")"
+    council_log "verdict: $verdict"
   fi
 
-  arb="$(mktemp)"
-  verdict="$(council_arbitrate "$qfile" "$arb" $panel)"
-  council_log "verdict: $verdict"
-
-  out="$(mktemp)"
-  if [ "$verdict" = "AGREE" ]; then
-    if council_synthesize "$qfile" "$out" $panel; then
-      cat "$out"
-    else
-      council_warn "synthesis failed; raw answers follow"
-      council_render_answers "${COUNCIL_ANSWER_FILES[@]}"
-    fi
-  else
+  if [ "$verdict" = "DISAGREE" ]; then
     echo "## Stalemate — escalating to a model that was not in the room"
     echo
-    if [ -s "$arb" ]; then
-      echo "Point of contention, per the arbiter:"
-      sed -n '2,6p' "$arb"
+    # Lines 2-6 are the arbiter's reasoning. A failed or unclear arbiter leaves
+    # a one-line default note instead; show that rather than an empty heading.
+    if council_has_content "$arb"; then
+      if [ -n "$(sed -n '2,6p' "$arb" | tr -d '[:space:]')" ]; then
+        echo "Point of contention, per the arbiter:"
+        sed -n '2,6p' "$arb"
+      else
+        echo "Arbiter:"
+        head -1 "$arb"
+      fi
       echo
     fi
-    if council_tiebreak "$qfile" "$arb" "$out" $panel; then
-      echo "### Binding verdict"
-      echo
-      cat "$out"
+    TB="$(pick_judge tiebreak $panel)"
+    if council_tiebreak "$TB" "$qfile" "$arb" "$out"; then
+      decision="$out"
     else
-      council_warn "no eligible tiebreaker; presenting both positions unresolved"
-      council_render_answers "${COUNCIL_ANSWER_FILES[@]}"
+      council_warn "tiebreak failed or no eligible tiebreaker"
     fi
   fi
-  rm -f "$qfile" "$arb" "$out"; cleanup_answers
+
+  # The final reviewer is chosen ONCE, after every other decision-maker is
+  # known, and that same id is invoked and reported.
+  FINAL=""
+  if [ "${COUNCIL_SKIP_FINAL:-0}" = "1" ]; then
+    council_log "final review skipped (COUNCIL_SKIP_FINAL=1)"
+  else
+    FINAL="$(council_policy_judge finalize $panel $ARBITER $TB 2>/dev/null || true)"
+    [ -n "$FINAL" ] || council_warn "no eligible final reviewer; the judge's decision stands"
+  fi
+
+  if [ -n "$FINAL" ] && council_finalize "$FINAL" "$qfile" "$arb" "$decision" "$TB" "$fin"; then
+    case "$verdict" in
+      AGREE)    echo "## Panel agreed — final call ($FINAL)" ;;
+      SINGLE)   echo "## One advisor answered — final call ($FINAL)" ;;
+      DISAGREE) if [ -n "$decision" ]; then
+                  # Provisional: the final call below may overturn it.
+                  echo "### Provisional verdict ($TB)"; echo; cat "$decision"; echo
+                fi
+                echo "## Final call ($FINAL)" ;;
+    esac
+    echo
+    cat "$fin"
+  else
+    [ -n "$FINAL" ] && council_warn "final reviewer '$FINAL' failed or gave a malformed call; the judge's decision stands"
+    case "$verdict" in
+      AGREE)
+        if council_synthesize "$(pick_judge synthesize $panel)" "$qfile" "$out"; then cat "$out"
+        else council_warn "synthesis failed; raw answers follow"
+             council_render_answers "${COUNCIL_ANSWER_FILES[@]}"; fi ;;
+      SINGLE)
+        council_warn "reporting the single answer unjudged"
+        for f in "${COUNCIL_ANSWER_FILES[@]}"; do council_has_content "$f" && cat "$f"; done ;;
+      DISAGREE)
+        if [ -n "$decision" ]; then
+          echo "### Binding verdict ($TB)"; echo; cat "$decision"
+        else
+          council_warn "no verdict; presenting the positions unresolved"
+          council_render_answers "${COUNCIL_ANSWER_FILES[@]}"
+        fi ;;
+    esac
+  fi
+  rm -f "$qfile" "$arb" "$out" "$fin"; cleanup_answers
 }
 
 cmd_raw() {
   local q qfile panel id i f RESERVED
+  refuse_model_for_panel
+  council_preflight_warnings
   q="$(read_question "$@")"
-  RESERVED="$(council_policy_reserved_judge 2>/dev/null || true)"
+  council_start_round_clock
+  RESERVED="$(council_policy_reserved | tr '\n' ' ')"
   panel="$(council_policy_panel advise "$AGENTS" $RESERVED | tr '\n' ' ')" || exit 2
   qfile="$(mktemp)"; printf '%s' "$q" > "$qfile"
   convene "$qfile" $panel
@@ -196,19 +269,27 @@ cmd_provider() {
 cmd_review() {
   local tmp f
   [ $# -gt 0 ] || { echo "council: review needs at least one file" >&2; exit 2; }
+  # Check every file before creating the temp file, so a bad path cannot exit
+  # with the temp file left behind.
+  for f in "$@"; do
+    [ -f "$f" ] || { echo "council: no such file: $f" >&2; exit 2; }
+  done
   tmp="$(mktemp)"
   {
     echo "Review the following file(s). Name real bugs, robustness gaps and"
     echo "simplifications. Be specific and terse. Skip praise."
     for f in "$@"; do
-      [ -f "$f" ] || { echo "council: no such file: $f" >&2; exit 2; }
       echo
       echo "----- FILE: $f -----"
       cat "$f"
     done
   } > "$tmp"
-  cmd_ask < "$tmp"
+  # In a subshell: cmd_ask exits on refusal, policy failure or no answers, and
+  # an exit in this shell would skip the cleanup. Its exit code is kept.
+  local rc=0
+  ( cmd_ask < "$tmp" ) || rc=$?
   rm -f "$tmp"
+  return "$rc"
 }
 
 cmd_explore() {
@@ -259,6 +340,11 @@ cmd_doctor() {
   local id bin out
   echo "council doctor — $(council_os), hop limit $(council_max_hops)"
   echo "rules: $(council_rules_file)"
+  if [ -n "$(council_timeout_cmd)" ]; then
+    echo "call timeout: $(council_call_timeout)s via $(council_timeout_cmd) (COUNCIL_CALL_TIMEOUT);" \
+         "round deadline: $(council_seconds COUNCIL_ROUND_TIMEOUT 540)s (COUNCIL_ROUND_TIMEOUT)"
+  fi
+  council_preflight_warnings
   echo
   for id in $(council_provider_ids); do
     if bin="$(council_provider_bin "$id" 2>/dev/null)"; then
@@ -282,7 +368,7 @@ cmd_doctor() {
   done
   echo
   echo "panel that 'council ask' would convene:"
-  council_policy_panel advise "" "$(council_policy_reserved_judge 2>/dev/null || true)" 2>/dev/null | sed 's/^/  /' || echo "  (policy unsatisfied)"
+  council_policy_panel advise "" $(council_policy_reserved) 2>/dev/null | sed 's/^/  /' || echo "  (policy unsatisfied)"
 }
 
 MODEL=""; DIR=""; AGENTS=""

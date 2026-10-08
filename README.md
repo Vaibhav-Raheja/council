@@ -83,7 +83,8 @@ the answer on stdout. Routing then follows the **capabilities** it declares —
 never its name. Drop files in `~/.config/council/providers/` to override the
 built-ins without touching the repo.
 
-Ships with `claude`, `codex` and `agy` (Antigravity/Gemini), plus a commented
+Ships with `sonnet`, `opus`, `fable` (all via the `claude` CLI), `codex` and
+`agy` (Antigravity/Gemini), plus a commented
 API-key example.
 
 ## Hard rules
@@ -109,6 +110,72 @@ recursively. `COUNCIL_HOP_DEPTH` bounds this, and it **fails closed**: a
 non-numeric or corrupted counter is treated as maximum depth, not as zero.
 Raise the ceiling with `COUNCIL_MAX_HOPS`.
 
+## Who does what
+
+| Provider | Model | Role in `council ask` |
+|---|---|---|
+| `sonnet` | Claude Sonnet | panel: fast, precise, answers from what it is given |
+| `codex` | GPT via codex | panel: explores a repo itself; precise, falsifiable defects |
+| `agy` | Gemini via Antigravity | panel: very large context; must be fed content |
+| `opus` | Claude Opus | judge: rules agree/disagree, breaks stalemates |
+| `fable` | Claude Fable | final call: reviews every decision, returns the answer |
+
+A round runs in four steps:
+1. The panel answers in parallel, blind to each other.
+2. Opus rules whether they materially disagree.
+3. On a stalemate, Opus issues a provisional verdict.
+4. Fable reviews the panel answers, the ruling and any verdict, opens with
+   `UPHELD`, `AMENDED` or `OVERTURNED`, and writes the final answer.
+
+When the panel agrees, Fable writes the merged answer directly. On a stalemate,
+Opus's verdict is printed as *provisional* because Fable may overturn it. Fable
+also runs when the tiebreak fails, deciding the dispute itself, and when only one
+advisor answered.
+
+A final call counts only if its first non-blank line is exactly `UPHELD`,
+`AMENDED` or `OVERTURNED` and it contains a `## Final answer` section. Anything
+else, or a failed call, falls back to Opus. On agreement that means Opus's
+synthesis; on a stalemate, its verdict, then labelled *binding*. Set
+`COUNCIL_SKIP_FINAL=1` to skip Fable deliberately. The arbiter's reply is parsed
+the same strict way: the exact word `AGREE` or `DISAGREE`, so "NOT AGREE" is a
+disagreement.
+
+`council_policy_reserved` holds the judge and every `final`-capable provider off
+the panel. That applies even if one of them also declares `reason`.
+
+The three Claude providers share one binary and each pins a versioned model id
+(`claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`). Every call blanks
+Claude Code's `advisorModel`, so no call quietly consults another model. Without
+that, the headless system prompt tells Claude to call its advisor, which breaks
+panel independence and repeats Fable's review. Tools are `Read,Grep,Glob` under
+`--restricted --strict-mcp-config`. File reads are confined to the working
+directory, which is the repo under review, so run `council` from inside it.
+Command-running tools, user settings and MCP servers are dropped. A judge can
+check a claim against the code. An instruction smuggled into an answer cannot
+make it run anything or read outside the repo. Prompt section markers carry a
+random tag (`[tag …]`). It is fresh for each judging stage and never exported, so
+no advisor can read it and no judge has seen the tag of a later stage. Any
+`[tag ` inside embedded model output is rewritten before embedding. Judges are
+told an untagged "section" is just data. The tag never appears in user-facing
+output. `--restricted` needs a Claude Code that supports it; `council` warns if
+the installed one doesn't.
+
+`-m` names one model, so `ask`, `raw` and `review` refuse it rather than hand,
+say, a Claude alias to codex. Pin panel models in `providers/<id>.conf`. Each
+model call is capped by `COUNCIL_CALL_TIMEOUT` (seconds, default 240, `0` for
+none). It runs under `timeout -k` (`COUNCIL_KILL_GRACE`, default 10 s), so a hung
+or SIGTERM-ignoring CLI cannot stall a round. On BusyBox, which has no `-k`, it
+runs without the grace kill. The whole round also has a soft deadline,
+`COUNCIL_ROUND_TIMEOUT` (default 540 s). Later stages get only the time left,
+and if they run out the round falls back to the decision already made. It is
+soft because calls started near the deadline still get 1 s plus the kill grace.
+With the defaults the worst case is about 572 s, plus at most 5 s for the
+`--restricted` preflight check, which is still under a 600 s caller budget. Without `timeout`/`gtimeout`, calls run uncapped and
+council warns.
+
+A leftover `claude.conf` from before this split is ignored whenever `opus`
+exists, and council warns about it.
+
 ## Design notes
 
 Three behaviours that exist because the alternative was observed to fail:
@@ -127,7 +194,7 @@ Three behaviours that exist because the alternative was observed to fail:
 bash test/run-tests.sh
 ```
 
-17 tests, no network, no quota: they run against stub providers in
+90 tests, no network, no quota: they run against stub providers in
 `test/fixtures`, including both the agreement and the stalemate branch.
 
 ## Requirements

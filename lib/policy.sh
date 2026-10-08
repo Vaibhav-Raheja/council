@@ -76,7 +76,23 @@ council_policy_panel() {
 
 # The provider held out of advisory panels so it can judge. Highest-ranked
 # arbiter-capable provider; empty when the invariant is off.
+# A final reviewer is never the reserved judge while another arbiter exists:
+# it is held out anyway, and reserving it would push the real judge onto the
+# panel and leave the final reviewer to arbitrate.
 council_policy_reserved_judge() {
+  local id first=""
   [ "$(council_policy_invariant reserve-judge on)" = "on" ] || return 1
-  council_providers_with_cap arbiter | head -1
+  for id in $(council_providers_with_cap arbiter); do
+    [ -z "$first" ] && first="$id"
+    council_provider_has_cap "$id" final || { echo "$id"; return 0; }
+  done
+  [ -n "$first" ] && echo "$first"
+}
+
+# Everyone held out of a panel: the reserved judge, plus every provider that can
+# make the final call. A final reviewer that also declared 'reason' would
+# otherwise sit on the panel and be ineligible to review the round.
+council_policy_reserved() {
+  { council_policy_reserved_judge 2>/dev/null || true
+    council_providers_with_cap final; } | sed '/^$/d' | awk '!seen[$0]++'
 }

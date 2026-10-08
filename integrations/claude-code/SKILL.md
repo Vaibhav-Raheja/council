@@ -17,8 +17,9 @@ council explore <dir> "<q>"     # hand a repo to a model that reads it itself
 council raw "<question>"        # both advisors verbatim, no judging
 ```
 
-Always pass an explicit Bash `timeout` of at least **420000 ms**. A panel round
-is two model calls in parallel plus one or two judging calls; it takes minutes.
+Always pass an explicit Bash `timeout` of at least **600000 ms**. A panel round
+is three model calls in parallel, then a judge, an optional tiebreak and a final
+review in sequence; it takes minutes.
 A default 120 s timeout truncates it and looks like a model failure.
 
 Long inputs go on stdin rather than argv:
@@ -34,6 +35,12 @@ disagree. On agreement the chair synthesises; on stalemate a model that was not
 in the room casts a binding vote. Routing, panel composition and the
 no-self-judgement rule are enforced by `~/council/policy/rules.conf` — not by me
 and not by the prompt. I do not pick which model answers.
+
+Panel: Sonnet, Codex, Gemini. Opus judges: it rules agree or disagree and
+breaks stalemates. Fable reviews every decision and makes the final call,
+opening with UPHELD, AMENDED or OVERTURNED. That word is the first line of
+Fable's `## ... final call (fable)` section, not of stdout. Always report that word, and if
+Fable changed anything, say what and whose decision it overrode.
 
 ## Reporting back
 

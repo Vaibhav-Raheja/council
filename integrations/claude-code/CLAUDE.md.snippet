@@ -8,7 +8,7 @@ run it as part of answering, then report what it said.
     council explore <dir> "<q>"     repo handed to a model that reads it itself
     council raw "<question>"        both advisors verbatim, no judging
 
-Always pass a Bash `timeout` of at least 420000 ms — a round is several model
+Always pass a Bash `timeout` of at least 600000 ms — a round is several model
 calls and takes minutes; the 120 s default truncates it and looks like failure.
 Long input goes on stdin: `{ echo "<q>"; echo ---; cat <files>; } | council ask`.
 
@@ -45,3 +45,10 @@ routing and the no-self-judgement rule are enforced by $COUNCIL_HOME/policy/rule
 $COUNCIL_HOME/providers/. `council doctor` checks installation and live auth.
 Exit codes: 2 usage, 3 hop-depth refused, 4 missing binary, 5 no answer,
 6 truncated. A non-zero exit is never an answer.
+
+Roles: panel = sonnet + codex + agy; opus judges (agree/disagree, tiebreak);
+fable makes the final call; the first line of its section is UPHELD /
+AMENDED / OVERTURNED.
+Always report that word. If it is not UPHELD, say what Fable changed and whose
+decision it overrode. A round is up to four sequential model stages, so pass a
+Bash timeout of 600000 ms. `COUNCIL_SKIP_FINAL=1` skips Fable.
