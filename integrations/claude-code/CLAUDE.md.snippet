@@ -6,7 +6,7 @@ run it as part of answering, then report what it said.
     council ask "<question>"        panel -> arbitration -> synthesis or tiebreak
     council review <file>...        code review by the panel
     council explore <dir> "<q>"     repo handed to a model that reads it itself
-    council raw "<question>"        both advisors verbatim, no judging
+    council raw "<question>"        every advisor verbatim, no judging
 
 Always pass a Bash `timeout` of at least 600000 ms — a round is several model
 calls and takes minutes; the 120 s default truncates it and looks like failure.
@@ -39,10 +39,10 @@ switching position.
 
 ## Facts about the tool
 
-Repo: ~/council. Panel composition,
-routing and the no-self-judgement rule are enforced by $COUNCIL_HOME/policy/rules.conf
+Repo: @COUNCIL_HOME@. Panel composition,
+routing and the no-self-judgement rule are enforced by @COUNCIL_HOME@/policy/rules.conf
 — I do not choose which model answers. Adding an LLM is one file in
-$COUNCIL_HOME/providers/. `council doctor` checks installation and live auth.
+@COUNCIL_HOME@/providers/. `council doctor` checks installation and live auth.
 Exit codes: 2 usage, 3 hop-depth refused, 4 missing binary, 5 no answer,
 6 truncated. A non-zero exit is never an answer.
 

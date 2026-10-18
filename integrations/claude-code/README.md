@@ -1,56 +1,51 @@
 # Claude Code integration
 
-Makes the council convene **itself**. You stop typing `council` and it fires when
-the situation calls for it — a decision with real stakes, a review request, an
-architectural choice that would be expensive to reverse.
-
-Without this, the CLI still works; you just have to remember to run it, which in
-practice means it gets built and never used.
+This lets Claude Code run the council on its own, without you typing `council`.
+It kicks in for decisions with real tradeoffs, code review requests, and choices
+that would be costly to undo. It then reports what each model said, including
+where they disagreed.
 
 ## Install
 
-`install.sh` offers to do this for you. To wire it by hand:
+The easiest way is the installer, which asks before changing anything:
+
+```sh
+./install.sh
+```
+
+To install by hand, run this from your council folder. Both files contain the
+placeholder `@COUNCIL_HOME@`, which these commands replace with the folder's
+path:
 
 ```sh
 mkdir -p ~/.claude/skills/council
-cp integrations/claude-code/SKILL.md ~/.claude/skills/council/SKILL.md
-cat integrations/claude-code/CLAUDE.md.snippet >> ~/.claude/CLAUDE.md
+sed "s|@COUNCIL_HOME@|$PWD|g" integrations/claude-code/SKILL.md > ~/.claude/skills/council/SKILL.md
+sed "s|@COUNCIL_HOME@|$PWD|g" integrations/claude-code/CLAUDE.md.snippet >> ~/.claude/CLAUDE.md
 ```
 
-Restart Claude Code, then ask it something with a genuine tradeoff. It should
-convene the panel unprompted and tell you what each model said.
+If your folder's path contains `|`, `&` or `\`, use `./install.sh` instead.
 
-## The two pieces
+## What the two files do
 
-**`SKILL.md`** is loaded on demand when its description matches what you asked.
-The description carries the trigger list, so edit that rather than the body if
-you want it to fire more or less often.
+- **`SKILL.md`** loads when your request matches its description. Edit the
+  description to make it run more or less often.
+- **`CLAUDE.md.snippet`** is always loaded. It repeats when to run the council
+  and says how to report the result: give the council's real answer, always
+  show disagreement, and say which model found what.
 
-**`CLAUDE.md.snippet`** is always in context, so it still applies when no skill
-matches. It repeats the triggers deliberately — belt and braces — and adds the
-reporting rules.
+## Check it works
 
-## Why the reporting rules matter
+Restart Claude Code and ask something with a real tradeoff, such as "should we
+use Postgres or SQLite for this?". It should run the council without being asked
+and tell you what each model said.
 
-The default failure of any "ask several models" setup is that the orchestrator
-quietly smooths a disagreement into a confident consensus, which reads well and
-tells you nothing. The rules therefore require it to:
+If it runs too often, add to the "do not run for" list in the snippet.
 
-- give the council's actual answer, not a paraphrase
-- always surface disagreement, naming who lost the tiebreak and why
-- attribute findings to the model that made them
-- say plainly when the council contradicts what it told you earlier
+## Remove it
 
-## Tuning
+```sh
+rm -r ~/.claude/skills/council
+```
 
-Convening costs minutes and subscription quota, so the snippet also lists when
-**not** to: factual lookups, mechanical edits, anything the assistant can simply
-do. If it fires too eagerly, tighten that list first — it is more effective than
-weakening the triggers.
-
-## Other assistants
-
-Nothing here is specific to `council` internals; it is prompt text plus a CLI
-call. Adapting it to another agent means giving that agent the same four rules:
-when to convene, when not to, the command, and how to report. Contributions for
-other harnesses are welcome.
+Then delete the section starting with `# Multi-model council` from
+`~/.claude/CLAUDE.md`.

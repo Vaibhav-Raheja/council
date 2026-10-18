@@ -1,0 +1,5 @@
+shell=bash
+
+# Providers and libraries are sourced from paths computed at runtime
+# ($COUNCIL_HOME, user config dirs), which shellcheck cannot follow.
+disable=SC1090,SC1091

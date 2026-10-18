@@ -71,6 +71,7 @@ council_data_notice() {
 # (* _ . : ! , ` #) and upper-case it. Callers compare it EXACTLY.
 #   "**Agree.**" -> AGREE   "# UPHELD" -> UPHELD   "- AGREE" -> AGREE
 #   "UPHELD — stands" -> UPHELD   "AG REE" -> AG   "UPHELD123" -> UPHELD123
+# shellcheck disable=SC2016  # the backticks in the sed class are literal
 council_first_word() {
   awk 'NF {
          for (i = 1; i <= NF; i++)

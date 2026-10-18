@@ -1,77 +1,52 @@
 # Adding a provider
 
-A provider is one file. The engine never learns its name — routing follows the
-capabilities it declares.
+A provider is one file that tells council how to call a model. You never edit the
+engine to add one. Council decides what work to give a model from the
+capabilities the file lists, not from its name.
+
+## 1. Copy the template
 
 ```sh
 cp providers/_template.conf providers/mymodel.conf
-$EDITOR providers/mymodel.conf
-council providers     # should now list it
-council doctor        # calls it live
 ```
 
-Files in `~/.config/council/providers/` shadow built-ins with the same name, so
-you can retune a shipped provider without editing the repo.
+To change a provider without touching the repo, put your file in
+`~/.config/council/providers/` instead. A file there replaces a built-in one with
+the same name.
 
-## The contract
+## 2. Fill in the fields
 
-| Variable | Meaning |
-|---|---|
-| `PROVIDER_ID` | Slug; must match the filename. |
-| `PROVIDER_LABEL` | Human-readable name. |
-| `PROVIDER_ROLE` | One word, shown in listings: `chair`, `investigator`, `reader`, `advisor`. |
-| `PROVIDER_SUMMARY` | What it is genuinely best at, and any quirk a caller must know. Shown by `council roles`. |
-| `PROVIDER_CAPS` | Space-separated capability tags. **This is what routing uses.** |
-| `PROVIDER_RANK` | Integer; lower wins when choosing among equals. |
-| `PROVIDER_BIN_NAME` | Binary to look for on `PATH`. |
-| `PROVIDER_BIN_ENV` | Env var that overrides discovery, e.g. `CODEX_BIN`. |
-| `PROVIDER_BIN_CANDIDATES` | Extra absolute paths to try. |
-| `provider_invoke()` | Prompt on stdin, **answer only** on stdout. |
+| Field | What it's for | Example |
+|---|---|---|
+| `PROVIDER_ID` | Short name. Must match the filename. | `mymodel` |
+| `PROVIDER_LABEL` | Name shown to people. | `"My Model"` |
+| `PROVIDER_ROLE` | One word shown in listings. | `advisor` |
+| `PROVIDER_SUMMARY` | What the model is good at, and any quirks. Shown by `council roles`. | `"Fast at code review."` |
+| `PROVIDER_CAPS` | What work it may be given (see step 5). | `"reason review tiebreak"` |
+| `PROVIDER_CONTAINMENT` | How it is kept read-only (see step 4). **Required.** | `"--sandbox read-only: no writes"` |
+| `PROVIDER_RANK` | Lower is preferred when several models qualify. | `40` |
+| `PROVIDER_BIN_NAME` | Program to look for on your `PATH`. | `mymodel` |
+| `PROVIDER_BIN_ENV` | Variable that points at the program directly. | `MYMODEL_BIN` |
+| `PROVIDER_BIN_CANDIDATES` | Other paths to try, separated by spaces. | `"$HOME/.local/bin/mymodel"` |
 
-Optional: `PROVIDER_DEFAULT_MODEL`, `PROVIDER_MODELS_HINT`, `PROVIDER_AUTH_HINT`,
-`PROVIDER_AUTH_KIND`, `PROVIDER_API_KEY_ENV`, `PROVIDER_INSTALL_CMD`,
-`PROVIDER_INSTALL_HINT`.
+Optional fields: `PROVIDER_DEFAULT_MODEL`, `PROVIDER_MODELS_HINT`,
+`PROVIDER_AUTH_HINT` (how to sign in), `PROVIDER_AUTH_KIND`,
+`PROVIDER_API_KEY_ENV`, `PROVIDER_INSTALL_CMD`, `PROVIDER_INSTALL_HINT`.
 
-## Capabilities
+## 3. Write `provider_invoke`
 
-Declare only what is true. The invariants are only as good as these claims.
+This function does the actual call. It must:
 
-| Tag | Meaning |
-|---|---|
-| `reason` | General advisory opinions. Required to sit on a panel. |
-| `review` | Code review. |
-| `explore` | Will read a repo itself when handed a directory. |
-| `feed` | Must be handed content; cannot explore. |
-| `large-context` | Comfortably ingests very large prompts. |
-| `arbiter` | May rule on whether two answers actually disagree. |
-| `tiebreak` | Eligible to cast a deciding vote. |
-| `chair` | May synthesise agreeing answers. |
-| `write` | Permitted to modify your disk. Grant sparingly. |
+1. Read the prompt from standard input.
+2. Print **only the answer** to standard output. Anything else goes to standard
+   error.
+3. Exit with a non-zero status if the call failed.
 
-`arbiter`, `tiebreak` and `chair` are all constrained by `no-self-judgement`: a
-provider holding them will still be excluded from judging any round it advised in.
+It can use these variables:
 
-## `provider_invoke()`
-
-Inputs available to you:
-
-- `$P_BIN` — the resolved binary path
-- `$P_MODEL` — requested model, or `PROVIDER_DEFAULT_MODEL`, possibly empty
-- `$P_DIR` — working directory, set only for `explore`-style calls
-
-Rules:
-
-1. Read the prompt from **stdin**.
-2. Write **only the answer** to stdout. Diagnostics go to stderr.
-3. Exit non-zero on failure.
-4. Do not modify the filesystem unless you declared `write`.
-
-The engine already handles what surrounds this: it discards whitespace-only
-output, treats a non-zero exit with partial bytes as a truncated answer, shows
-captured stderr when a call fails, and isolates every provider in a subshell so
-two `provider_invoke` definitions cannot collide.
-
-### Example: a CLI
+- `$P_BIN`: the path to the program
+- `$P_MODEL`: the model to use, or `PROVIDER_DEFAULT_MODEL`, or empty
+- `$P_DIR`: a directory to work in, set only for `council explore`
 
 ```sh
 provider_invoke() {
@@ -81,26 +56,70 @@ provider_invoke() {
 }
 ```
 
-### Example: an HTTP API with a key
+Council handles the rest: it ignores empty answers, throws away answers cut off
+by an error, shows the error output when a call fails, and keeps each provider's
+code separate from the others.
 
-API keys are optional throughout `council`; nothing requires one. See
-`providers/_openai-api.conf` for a working example using `curl` and `jq`. Enable
-it by renaming it without the leading underscore and exporting the key. Note it
-is metered per token by the vendor, unlike the OAuth subscription providers.
+If a tool has a quirk, work around it here so nobody else has to remember it.
+The built-in `agy` provider adds a line to every prompt telling the model not to
+use tools, because that tool otherwise returns nothing.
 
-## Quirks belong in the provider
+For a provider that calls a web API with a key, see
+`providers/_openai-api.conf`. Remove the leading underscore to turn it on. API
+keys are always optional in council.
 
-Anything a caller would otherwise have to remember goes in `provider_invoke()`.
-The shipped `agy` provider is the worked example: that CLI reaches for a shell
-tool even when the prompt already contains everything it needs, and its print
-mode then denies the tool and returns nothing. The provider prepends a no-tools
-instruction so callers never see the failure. Push the workaround down here
-rather than documenting it upward.
+## 4. Say how it stays read-only
+
+Set `PROVIDER_CONTAINMENT` to one honest line saying which flags stop the tool
+from changing files, running commands, or reading more than it should, and how
+far they go:
+
+```sh
+PROVIDER_CONTAINMENT="--sandbox read-only: writes and network blocked; can still read outside the repo"
+```
+
+**A provider without this line is never used.** It still shows up in
+`council providers`, but it is left out of every round and refused when called
+by name. (A provider that lists the `write` capability is the only exception.)
+
+Council checks that the line exists. It cannot check that the tool obeys its
+flags, so test that yourself: ask it to write a file, read a file outside the
+repo, and run a command, and make sure it refuses. If the only protection is an
+instruction in the prompt, say so, as `agy` does. Then add your provider to the
+table in [SECURITY.md](../SECURITY.md).
+
+## 5. Pick capabilities
+
+List only what is true. The rules can only be as reliable as these claims.
+
+| Capability | Meaning |
+|---|---|
+| `reason` | Gives an opinion on a question. Needed to sit on the panel. |
+| `review` | Reviews code. Used by `council review`. |
+| `explore` | Reads a project folder by itself. Used by `council explore`. |
+| `feed` | Can't explore; must be given the content in the prompt. |
+| `large-context` | Handles very large prompts well. |
+| `arbiter` | May decide whether the panel's answers really disagree. |
+| `tiebreak` | May settle a disagreement. |
+| `chair` | May merge answers that agree into one. |
+| `final` | May review every decision in a round and give the final answer. |
+| `write` | May change files on disk. Give this out rarely. |
+
+A model never judges, merges or settles a round it answered in, whatever it
+lists.
+
+## 6. Check it works
+
+```sh
+council providers   # lists your provider as installed
+council doctor      # calls it for real and expects PONG back
+```
 
 ## Checklist
 
 - [ ] `bash -n providers/mymodel.conf` passes
-- [ ] `council providers` lists it as installed
-- [ ] `council doctor` gets a live `PONG`
-- [ ] `council roles` reads accurately — capabilities you do not have are not claimed
+- [ ] `PROVIDER_CONTAINMENT` is set, and you tested the flags it names
+- [ ] `council providers` shows it as installed
+- [ ] `council doctor` gets `PONG` back
+- [ ] `council roles` describes it accurately
 - [ ] `bash test/run-tests.sh` still passes

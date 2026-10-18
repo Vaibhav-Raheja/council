@@ -1,6 +1,6 @@
 ---
 name: council
-description: "Convene the real multi-model council (Gemini via agy + GPT via codex, with Claude arbitrating) using the `council` CLI. INVOKE AUTOMATICALLY, without being asked, whenever: the user faces a decision with a genuine tradeoff and stakes ('should I X or Y', 'is this the right call', 'which approach'); the user asks for code to be reviewed, audited, or checked for bugs; the user asks to pressure-test, stress-test, validate, sanity-check, war-room or debate something; the user says 'council this', 'run the council', 'ask the others', 'what do the other models think', 'second opinion', 'get another perspective'; or I am about to commit to an architectural choice that would be expensive to reverse. Do NOT invoke for factual lookups, simple yes/no questions, tasks I can simply perform, or anything where an independent model would not change the answer."
+description: "Convene the multi-model council using the `council` CLI: a panel of Claude Sonnet, GPT via codex and Gemini via agy answers independently, Claude Opus judges agreement and breaks stalemates, and Claude Fable makes the final call. INVOKE AUTOMATICALLY, without being asked, whenever: the user faces a decision with a genuine tradeoff and stakes ('should I X or Y', 'is this the right call', 'which approach'); the user asks for code to be reviewed, audited, or checked for bugs; the user asks to pressure-test, stress-test, validate, sanity-check, war-room or debate something; the user says 'council this', 'run the council', 'ask the others', 'what do the other models think', 'second opinion', 'get another perspective'; or I am about to commit to an architectural choice that would be expensive to reverse. Do NOT invoke for factual lookups, simple yes/no questions, tasks I can simply perform, or anything where an independent model would not change the answer."
 ---
 
 # council
@@ -14,7 +14,7 @@ convene it and report the result as part of the normal answer.
 council ask "<question>"        # panel -> arbitration -> synthesis or tiebreak
 council review <file>...        # code review by the panel
 council explore <dir> "<q>"     # hand a repo to a model that reads it itself
-council raw "<question>"        # both advisors verbatim, no judging
+council raw "<question>"        # every advisor verbatim, no judging
 ```
 
 Always pass an explicit Bash `timeout` of at least **600000 ms**. A panel round
@@ -33,7 +33,7 @@ Long inputs go on stdin rather than argv:
 Advisors answer independently. An arbiter rules on whether they *materially*
 disagree. On agreement the chair synthesises; on stalemate a model that was not
 in the room casts a binding vote. Routing, panel composition and the
-no-self-judgement rule are enforced by `~/council/policy/rules.conf` — not by me
+no-self-judgement rule are enforced by `@COUNCIL_HOME@/policy/rules.conf` — not by me
 and not by the prompt. I do not pick which model answers.
 
 Panel: Sonnet, Codex, Gemini. Opus judges: it rules agree or disagree and

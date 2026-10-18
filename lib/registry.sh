@@ -17,6 +17,11 @@
 #
 # Optional:
 #   PROVIDER_DEFAULT_MODEL, PROVIDER_MODELS_HINT, PROVIDER_AUTH_HINT
+#   PROVIDER_CONTAINMENT one line: HOW the adapter keeps its CLI read-only. While
+#                        invariant write-requires-cap is on, a provider that
+#                        declares neither this nor the 'write' cap is never
+#                        selected for any task. The engine cannot verify the
+#                        claim; it only refuses providers that make none.
 
 council_provider_dirs() {
   echo "${COUNCIL_HOME}/providers"
@@ -26,9 +31,11 @@ council_provider_dirs() {
 }
 
 # All provider ids, user overrides shadowing builtins by filename.
+# Every walk over council_provider_dirs reads it line by line: `for d in $(...)`
+# would split a checkout or config path that contains a space.
 council_provider_ids() {
   local d f id
-  for d in $(council_provider_dirs); do
+  while IFS= read -r d; do
     for f in "$d"/*.conf; do
       [ -f "$f" ] || continue
       id="$(basename "$f" .conf)"
@@ -39,22 +46,23 @@ council_provider_ids() {
       if [ "$id" = claude ] && council_provider_dirs_have opus; then continue; fi
       echo "$id"
     done
-  done | sort -u
+  done < <(council_provider_dirs) | sort -u
 }
 
 council_provider_file() {
   local d f
   # Later dirs win, so walk in reverse preference order and keep the last hit.
   f=""
-  for d in $(council_provider_dirs); do
+  while IFS= read -r d; do
     [ -f "$d/$1.conf" ] && f="$d/$1.conf"
-  done
+  done < <(council_provider_dirs)
   [ -n "$f" ] || return 1
   printf '%s' "$f"
 }
 
 # Read one metadata field. Runs in a subshell so providers never leak state
 # into each other — critical, since every one defines provider_invoke().
+# The field is read by ${!var} indirection, never eval; an illegal name is empty.
 council_provider_meta() {
   local id var file
   id="$1"; var="$2"
@@ -62,7 +70,8 @@ council_provider_meta() {
   (
     set +u
     . "$file" >/dev/null 2>&1 || exit 1
-    eval "printf '%s' \"\${$var:-}\""
+    council_is_ident "$var" || exit 0
+    printf '%s' "${!var:-}"
   )
 }
 
@@ -73,8 +82,12 @@ council_provider_bin() {
   (
     set +u
     . "$file" >/dev/null 2>&1 || exit 1
-    council_resolve_bin "$(eval "printf '%s' \"\${${PROVIDER_BIN_ENV:-__none}:-}\"")" \
-                        "${PROVIDER_BIN_NAME:-}" ${PROVIDER_BIN_CANDIDATES:-}
+    # The override variable is NAMED by the provider; read it by indirection.
+    override=""
+    council_is_ident "${PROVIDER_BIN_ENV:-}" && override="${!PROVIDER_BIN_ENV:-}"
+    # Candidates are split on purpose: the field is a space-separated list.
+    # shellcheck disable=SC2086
+    council_resolve_bin "$override" "${PROVIDER_BIN_NAME:-}" ${PROVIDER_BIN_CANDIDATES:-}
   )
 }
 
@@ -87,12 +100,36 @@ council_provider_has_cap() {
   return 1
 }
 
-# Providers with a capability, available, ordered by PROVIDER_RANK.
+# True when a provider may be handed work under write-requires-cap: it either
+# declares 'write' (it is allowed to touch disk) or says how it is kept from it.
+council_provider_contained() {
+  council_provider_has_cap "$1" write && return 0
+  [ -n "$(council_provider_meta "$1" PROVIDER_CONTAINMENT)" ]
+}
+
+# Whether write-requires-cap is being enforced. Fails CLOSED: anything but an
+# explicit "off" enforces it, including a caller that never sourced policy.sh.
+council_write_cap_enforced() {
+  if type council_policy_invariant >/dev/null 2>&1; then
+    [ "$(council_policy_invariant write-requires-cap on)" != "off" ]
+  else
+    return 0
+  fi
+}
+
+# Providers with a capability, available, ordered by PROVIDER_RANK. Under
+# write-requires-cap, providers that make no containment claim are dropped:
+# listing them (council providers) is fine, handing them a prompt is not.
 council_providers_with_cap() {
-  local id rank
+  local id rank enforce=0
+  council_write_cap_enforced && enforce=1
   for id in $(council_provider_ids); do
     council_provider_has_cap "$id" "$1" || continue
     council_provider_available "$id" || continue
+    if [ "$enforce" -eq 1 ] && ! council_provider_contained "$id"; then
+      council_log "skipping $id: no PROVIDER_CONTAINMENT and no 'write' cap (write-requires-cap)"
+      continue
+    fi
     rank="$(council_provider_meta "$id" PROVIDER_RANK)"
     case "$rank" in ''|*[!0-9]*) rank=50 ;; esac
     printf '%s %s\n' "$rank" "$id"
@@ -113,36 +150,54 @@ council_invoke() {
     echo "council: empty prompt for '$id'" >&2; return 2
   fi
 
-  local limit tmo
+  local limit tmo call
   limit="$(council_call_timeout)"
   tmo="$(council_timeout_cmd)"
-
-  rc=0
-  if [ -n "$tmo" ] && [ "$limit" != "0" ]; then
-    # Per-call ceiling over the WHOLE provider_invoke, not just its binary: a
-    # fresh bash re-loads the provider under timeout(1); -k follows SIGTERM with
-    # SIGKILL for a CLI that ignores it. No temp executable, nothing to clean up.
-    # BusyBox timeout has no -k; probe once per call (cheap) and drop it there.
-    local killafter=""
-    "$tmo" -k 1 5 true >/dev/null 2>&1 && killafter="-k $(council_seconds COUNCIL_KILL_GRACE 10)"
-    COUNCIL_HOP_DEPTH=$(( $(council_hop_depth) + 1 )) \
-    "$tmo" $killafter "$limit" bash -c '
+  # Per-call ceiling over the WHOLE provider_invoke, not just its binary: a
+  # fresh bash re-loads the provider under the limit. No temp executable,
+  # nothing to clean up. Single-quoted: it expands in the child, not here.
+  # shellcheck disable=SC2016
+  call='
       set +u
       . "$COUNCIL_HOME/lib/common.sh"
       . "$1" >/dev/null 2>&1
       P_BIN="$2"; P_MODEL="${3:-${PROVIDER_DEFAULT_MODEL:-}}"; P_DIR="$4"
-      provider_invoke' council-call "$file" "$bin" "$model" "$dir" \
-      < "$prompt_file" > "$answer" 2> "$err" || rc=$?
+      provider_invoke'
+
+  rc=0
+  if [ "$limit" != "0" ]; then
+    if [ -n "$tmo" ]; then
+      # timeout(1): -k follows SIGTERM with SIGKILL for a CLI that ignores it.
+      # BusyBox timeout has no -k; probe once per call (cheap) and drop it there.
+      local killafter=""
+      "$tmo" -k 1 5 true >/dev/null 2>&1 && killafter="-k $(council_seconds COUNCIL_KILL_GRACE 10)"
+      # killafter is "" or two words, split on purpose.
+      # shellcheck disable=SC2086
+      COUNCIL_HOP_DEPTH=$(( $(council_hop_depth) + 1 )) \
+      "$tmo" $killafter "$limit" bash -c "$call" council-call "$file" "$bin" "$model" "$dir" \
+        < "$prompt_file" > "$answer" 2> "$err" || rc=$?
+    else
+      # No timeout(1) — stock macOS. The built-in watchdog enforces the same
+      # TERM-then-KILL contract. In a subshell so the hop-depth export stays
+      # local to this call.
+      # shellcheck disable=SC2030
+      ( export COUNCIL_HOP_DEPTH=$(( $(council_hop_depth) + 1 ))
+        council_run_capped "$limit" "$(council_seconds COUNCIL_KILL_GRACE 10)" \
+          bash -c "$call" council-call "$file" "$bin" "$model" "$dir"
+      ) < "$prompt_file" > "$answer" 2> "$err" || rc=$?
+    fi
     case "$rc" in
       124|137) echo "council: $id timed out after ${limit}s (COUNCIL_CALL_TIMEOUT)" >&2 ;;
     esac
   else
+    # shellcheck disable=SC2034  # P_* are read by the sourced provider_invoke
     (
       set +u
       . "$file" >/dev/null 2>&1
       P_BIN="$bin"
       P_MODEL="${model:-${PROVIDER_DEFAULT_MODEL:-}}"
       P_DIR="$dir"
+      # shellcheck disable=SC2031
       export COUNCIL_HOP_DEPTH=$(( $(council_hop_depth) + 1 ))
       provider_invoke < "$prompt_file" > "$answer" 2> "$err"
     ) || rc=$?
@@ -168,17 +223,21 @@ council_invoke() {
 # True if any provider dir holds <id>.conf (no recursion into council_provider_ids).
 council_provider_dirs_have() {
   local d
-  for d in $(council_provider_dirs); do [ -f "$d/$1.conf" ] && return 0; done
+  while IFS= read -r d; do [ -f "$d/$1.conf" ] && return 0; done < <(council_provider_dirs)
   return 1
 }
 
 # A non-negative integer from env var $1, else default $2 (warning on garbage).
 council_seconds() {
   local v
-  eval "v=\"\${$1:-$2}\""
+  council_is_ident "$1" || { echo "$2"; return 0; }
+  v="${!1:-$2}"
   case "$v" in
     ''|*[!0-9]*) echo "council: $1='$v' is not a number of seconds; using $2" >&2
                  echo "$2" ;;
+    # Longer than 6 digits (11+ days) would only overflow later arithmetic.
+    ???????*) echo "council: $1='$v' is out of range; using $2" >&2
+              echo "$2" ;;
     # 10# forces base 10: "08" would otherwise be invalid octal, "010" eight.
     *) echo "$(( 10#$v ))" ;;
   esac
@@ -210,8 +269,90 @@ council_start_round_clock() {
   else COUNCIL_DEADLINE=$(( $(date +%s) + r )); export COUNCIL_DEADLINE; fi
 }
 
-# timeout(1) or GNU gtimeout (Homebrew coreutils on macOS); empty if neither.
-council_timeout_cmd() { command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true; }
+# timeout(1) or GNU gtimeout (Homebrew coreutils on macOS); empty if neither,
+# and the built-in watchdog (council_run_capped) takes over.
+# COUNCIL_FORCE_WATCHDOG=1 is TEST-ONLY: it hides timeout(1) so the watchdog
+# path is exercised on machines that have it.
+council_timeout_cmd() {
+  [ "${COUNCIL_FORCE_WATCHDOG:-}" = 1 ] && return 0
+  command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true
+}
+
+# A pid and all its descendants, parents first. Collected BEFORE any signal is
+# sent: a child reparented by its parent's death can no longer be found by
+# pgrep -P. Without pgrep only the pid itself is known.
+council_proc_tree() {
+  local c
+  echo "$1"
+  command -v pgrep >/dev/null 2>&1 || return 0
+  for c in $(pgrep -P "$1" 2>/dev/null); do council_proc_tree "$c"; done
+}
+
+#   council_signal_tree <SIG> <pid>
+council_signal_tree() {
+  local pids
+  pids="$(council_proc_tree "$2")"
+  # One pid per line, split on purpose.
+  # shellcheck disable=SC2086
+  kill -"$1" $pids 2>/dev/null
+  return 0
+}
+
+# Run a command with a time limit, without timeout(1). After <limit> seconds the
+# command's whole process tree gets SIGTERM, and after <grace> more, SIGKILL.
+# Returns 124 when SIGTERM ended it and 137 when SIGKILL had to, like
+# `timeout -k`; otherwise the command's own status. stdio is inherited.
+#   council_run_capped <limit> <grace> cmd...
+# No new process group (no set -m), so a Ctrl-C at the terminal still reaches
+# the CLI. The watchdog polls once a second rather than sleeping the whole
+# limit, so it notices an early finish and leaves no long-lived sleep behind.
+council_run_capped() {
+  local limit grace pid wd rc mark
+  limit="$1"; grace="$2"; shift 2
+  mark="$(mktemp)"
+  # An async command's stdin is /dev/null unless redirected explicitly.
+  "$@" <&0 &
+  pid=$!
+  (
+    n=0
+    while [ "$n" -lt "$limit" ]; do
+      sleep 1; kill -0 "$pid" 2>/dev/null || exit 0; n=$(( n + 1 ))
+    done
+    # A command that finished during the last second did not time out.
+    kill -0 "$pid" 2>/dev/null || exit 0
+    # The tree is collected ONCE, before SIGTERM: once the wrapper dies its
+    # children are reparented and pgrep -P can no longer find them, so a
+    # descendant ignoring TERM would survive a tree recomputed for SIGKILL.
+    tree="$(council_proc_tree "$pid")"
+    echo 124 > "$mark"
+    # shellcheck disable=SC2086  # one pid per line, split on purpose
+    kill -TERM $tree 2>/dev/null
+    alive() { for p in $tree; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
+    n=0
+    while [ "$n" -lt "$grace" ]; do
+      sleep 1; alive || exit 0; n=$(( n + 1 ))
+    done
+    alive || exit 0
+    echo 137 > "$mark"
+    # shellcheck disable=SC2086
+    kill -KILL $tree 2>/dev/null
+  ) </dev/null >/dev/null 2>&1 &
+  wd=$!
+  # stderr of wait is dropped: bash reports a signalled job ("Terminated").
+  wait "$pid" 2>/dev/null; rc=$?
+  if [ -s "$mark" ]; then
+    # Timed out: the wrapper is gone, but a descendant ignoring SIGTERM may
+    # not be. Let the watchdog finish its grace and SIGKILL any survivor.
+    wait "$wd" 2>/dev/null
+  else
+    # Finished in time: stop the watchdog and the one-second sleep it may be in.
+    council_signal_tree TERM "$wd"
+    wait "$wd" 2>/dev/null
+  fi
+  [ -s "$mark" ] && rc="$(cat "$mark")"
+  rm -f "$mark"
+  return "$rc"
+}
 
 # Warn once per command when calls would run uncapped, and when a provider from
 # before the sonnet/opus/fable split is still loaded (e.g. a user override at
@@ -219,8 +360,9 @@ council_timeout_cmd() { command -v timeout 2>/dev/null || command -v gtimeout 2>
 # 'reason', so it would sit on the panel next to its own replacements.
 council_preflight_warnings() {
   local f
+  # Without timeout(1) calls are still capped, by the built-in watchdog.
   if [ -z "$(council_timeout_cmd)" ] && [ "$(council_call_timeout 2>/dev/null)" != "0" ]; then
-    council_warn "no timeout(1)/gtimeout found: model calls run uncapped (install coreutils)"
+    council_log "no timeout(1)/gtimeout; model calls are capped by the built-in watchdog"
   fi
   # The Claude providers pass --restricted; a Claude Code too old to know it
   # would fail every call. Probe only when one of them is installed. The probe
@@ -232,7 +374,7 @@ council_preflight_warnings() {
     tmo="$(council_timeout_cmd)"
     rc=0
     if [ -n "$tmo" ]; then help="$("$tmo" -s KILL 5 "$cbin" --help 2>/dev/null)" || rc=$?
-    else help="$("$cbin" --help 2>/dev/null)" || rc=$?; fi
+    else help="$(council_run_capped 5 0 "$cbin" --help 2>/dev/null </dev/null)" || rc=$?; fi
     case "$rc" in
       124|137) council_warn "claude --help did not answer within 5s; could not verify --restricted support" ;;
       *) printf '%s' "$help" | grep -q -- '--restricted' ||

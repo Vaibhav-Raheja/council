@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # Stock macOS ships bash 3.2, the oldest version council supports. Runner
+      # images put a newer bash first on PATH, so pin /bin/bash there to test
+      # what users actually run (every script starts with `#!/usr/bin/env bash`).
+      - name: Use the system bash (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/bash32"
+          ln -sf /bin/bash "$RUNNER_TEMP/bash32/bash"
+          echo "$RUNNER_TEMP/bash32" >> "$GITHUB_PATH"
+
+      - name: Install shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+
+      - name: Versions
+        run: |
+          bash --version | head -1
+          shellcheck --version | sed -n 2p
+
+      - name: Syntax
+        run: |
+          for f in council install.sh lib/*.sh test/run-tests.sh providers/*.conf; do
+            bash -n "$f"
+          done
+
+      - name: shellcheck
+        run: shellcheck -s bash council install.sh lib/*.sh test/run-tests.sh
+
+      - name: Tests
+        run: bash test/run-tests.sh

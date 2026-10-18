@@ -1,192 +1,131 @@
 # council
 
-Several AI CLIs, one question, and hard rules about who is allowed to do what.
+Ask several AI models the same question, and get one answer you can check.
 
-Advisors answer independently. An arbiter decides whether they actually disagree.
-If they do, a model that **was not in the room** casts the deciding vote.
+`council` sends your question to three models at once. Each answers on its own,
+without seeing the others. A separate judge decides whether they really
+disagree, settles it if they do, and a final reviewer writes the answer you get.
+
+Example (shortened):
 
 ```
 $ council ask "should we shard this table or add read replicas?"
 
-## Stalemate — escalating to a model that was not in the room
+## Panel agreed — final call (fable)
 
-Point of contention, per the arbiter:
-One advisor treats write volume as the binding constraint, the other treats
-query latency as the binding constraint.
+UPHELD
+All three advisors recommend read replicas first.
 
-### Binding verdict
-Read replicas first. The write figures quoted do not approach the ceiling of a
-single tuned primary, so sharding buys headroom you do not need at a cost —
-cross-shard joins — you would pay on every query from then on.
+## Final answer
+Add read replicas. The write volume you quoted is well within what one tuned
+database handles, so sharding adds cost you do not need yet.
 ```
-
-## Why
-
-One model gives you one answer and no way to tell whether it is any good. Three
-models with no structure gives you three answers and an argument. `council` adds
-the structure: independent answers, an explicit agree/disagree ruling, and a
-tiebreaker who cannot vote on their own opinion.
 
 ## Install
 
 ```sh
-git clone https://github.com/Vaibhav-Raheja/council.git ~/council
-~/council/install.sh
+git clone https://github.com/Vaibhav-Raheja/council.git
+cd council
+./install.sh
 ```
 
-The setup is guided and idempotent. It finds your CLIs, offers to install the
-ones it can, prints the sign-in command for each, links `council` onto your
-PATH, checks the policy can be satisfied, then calls every provider live.
+The installer is guided and safe to run again. It finds the AI command-line
+tools you have, tells you how to sign in to each, puts `council` on your PATH,
+and checks that every model answers.
 
-**OAuth is the default and no API key is required.** Each CLI holds its own
-subscription token. API keys are supported but entirely optional — see
-[Adding a provider](docs/adding-a-provider.md).
+You sign in to each tool with your normal account. No API key is needed.
 
-## Use
+## Quick start
 
-```sh
-council ask "<question>"        # panel, arbitration, synthesis or tiebreak
-council raw "<question>"        # every advisor verbatim, no judging
-council review src/app.py       # code review by the panel
-council explore ./repo "<q>"    # hand a repo to a model that reads it itself
-council codex "<question>"      # call one provider directly
-
-council providers               # who is registered, and what they can do
-council roles                   # what each is best at
-council rules                   # the enforced routing rules
-council doctor                  # installation and live auth check
-```
-
-Questions can arrive on stdin: `cat notes.md | council ask "summarise"`.
-
-## Or never type it at all
-
-`integrations/claude-code/` wires the council to convene ITSELF inside Claude
-Code — on a decision with real stakes, a review request, or an architectural
-choice that would be expensive to reverse. `install.sh` offers to set this up.
-Without it the CLI still works; you just have to remember to run it, which in
-practice means it gets built and never used.
-
-## Providers are data, not code
-
-A provider is one `.conf` file. Adding an LLM never means editing the engine:
-
-```sh
-cp providers/_template.conf providers/mymodel.conf
-$EDITOR providers/mymodel.conf
-council doctor
-```
-
-Each file declares what the model is good at, how to find its binary, how to log
-in, and one `provider_invoke()` function that takes a prompt on stdin and writes
-the answer on stdout. Routing then follows the **capabilities** it declares —
-never its name. Drop files in `~/.config/council/providers/` to override the
-built-ins without touching the repo.
-
-Ships with `sonnet`, `opus`, `fable` (all via the `claude` CLI), `codex` and
-`agy` (Antigravity/Gemini), plus a commented
-API-key example.
-
-## Hard rules
-
-Routing is enforced by `policy/rules.conf`, not left to a model's judgment.
-
-| Invariant | What it prevents |
+| Command | What it does |
 |---|---|
-| `no-self-judgement` | A provider arbitrating, synthesising or breaking a tie on a round where it was itself an advisor — grading its own homework. |
-| `reserve-judge` | Putting every model in the room and leaving nobody eligible to judge. |
-| `min-advisors` | A "council" of one quietly pretending to be a panel. |
-| `max-advisors` | Unbounded fan-out burning quota. |
-| `write-requires-cap` | Advisors touching your disk. They run read-only regardless of what a prompt asks. |
+| `council ask "<question>"` | Ask the panel and get one judged answer |
+| `council raw "<question>"` | Show every model's answer as-is, no judging |
+| `council review <file>...` | Have the panel review files |
+| `council explore <dir> "<question>"` | Let one model read a folder itself and answer |
+| `council <model> "<question>"` | Ask one model directly, for example `council codex "..."` |
+| `council providers` | List the models and whether they are installed |
+| `council roles` | Show what each model is good at |
+| `council rules` | Show the routing rules |
+| `council doctor` | Check that everything is installed and signed in |
+| `council --version` | Print the version |
 
-Tasks map to required capabilities (`explore`, `large-context`, `review`,
-`chair`, `tiebreak`, `arbiter`, …), so a model is only handed work it has
-declared it can do. Edit the rules; the engine obeys them.
+You can also pipe text in: `cat notes.md | council ask "summarise this"`.
 
-## Self-invocation
+Options: `-m <model>` picks the model for a single-model call, `-n <count>` sets
+how many advisors to use, and `-C <dir>` sets the folder handed to models that
+explore code themselves.
 
-`council` is on PATH, so a provider can convene the council itself — including
-recursively. `COUNCIL_HOP_DEPTH` bounds this, and it **fails closed**: a
-non-numeric or corrupted counter is treated as maximum depth, not as zero.
-Raise the ceiling with `COUNCIL_MAX_HOPS`.
+Run `council` from inside the project you are asking about. It refuses to run
+from your home folder or `/`.
 
-## Who does what
+## How a round works
 
-| Provider | Model | Role in `council ask` |
+1. **Panel.** Claude Sonnet, GPT (via `codex`) and Gemini (via `agy`) answer in
+   parallel. None of them sees the others' answers.
+2. **Judge.** Claude Opus reads the answers and decides whether they really
+   disagree or just word things differently.
+3. **Tiebreak.** If they disagree, Opus picks a side and says why.
+4. **Final call.** Claude Fable checks everything above, starts with `UPHELD`,
+   `AMENDED` or `OVERTURNED`, and writes the final answer.
+
+If Fable fails or is skipped, Opus's decision stands. A model never judges a
+round it answered in. [docs/how-it-works.md](docs/how-it-works.md) covers the
+details.
+
+## Configuration
+
+Set these as environment variables.
+
+| Variable | Default | What it does |
 |---|---|---|
-| `sonnet` | Claude Sonnet | panel: fast, precise, answers from what it is given |
-| `codex` | GPT via codex | panel: explores a repo itself; precise, falsifiable defects |
-| `agy` | Gemini via Antigravity | panel: very large context; must be fed content |
-| `opus` | Claude Opus | judge: rules agree/disagree, breaks stalemates |
-| `fable` | Claude Fable | final call: reviews every decision, returns the answer |
+| `COUNCIL_CALL_TIMEOUT` | `240` | Seconds one model call may take (`0` for no limit) |
+| `COUNCIL_ROUND_TIMEOUT` | `540` | Seconds a whole round may take (`0` for no limit) |
+| `COUNCIL_SKIP_FINAL` | off | Set to `1` to skip the final reviewer |
+| `COUNCIL_ALLOW_BROAD_CWD` | off | Set to `1` to allow running from your home folder or `/` |
+| `COUNCIL_MAX_HOPS` | `2` | How many times `council` may call itself (up to 98) |
+| `COUNCIL_DEBUG` | off | Set to `1` to print which model was picked for what |
 
-A round runs in four steps:
-1. The panel answers in parallel, blind to each other.
-2. Opus rules whether they materially disagree.
-3. On a stalemate, Opus issues a provisional verdict.
-4. Fable reviews the panel answers, the ruling and any verdict, opens with
-   `UPHELD`, `AMENDED` or `OVERTURNED`, and writes the final answer.
+Time limits work on macOS without installing anything extra.
 
-When the panel agrees, Fable writes the merged answer directly. On a stalemate,
-Opus's verdict is printed as *provisional* because Fable may overturn it. Fable
-also runs when the tiebreak fails, deciding the dispute itself, and when only one
-advisor answered.
+## Adding a model
 
-A final call counts only if its first non-blank line is exactly `UPHELD`,
-`AMENDED` or `OVERTURNED` and it contains a `## Final answer` section. Anything
-else, or a failed call, falls back to Opus. On agreement that means Opus's
-synthesis; on a stalemate, its verdict, then labelled *binding*. Set
-`COUNCIL_SKIP_FINAL=1` to skip Fable deliberately. The arbiter's reply is parsed
-the same strict way: the exact word `AGREE` or `DISAGREE`, so "NOT AGREE" is a
-disagreement.
+Each model is one small config file in `providers/`. Copy
+`providers/_template.conf`, fill it in, and run `council doctor`. No changes to
+the main code are needed. See [docs/adding-a-provider.md](docs/adding-a-provider.md).
 
-`council_policy_reserved` holds the judge and every `final`-capable provider off
-the panel. That applies even if one of them also declares `reason`.
+## Safety
 
-The three Claude providers share one binary and each pins a versioned model id
-(`claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`). Every call blanks
-Claude Code's `advisorModel`, so no call quietly consults another model. Without
-that, the headless system prompt tells Claude to call its advisor, which breaks
-panel independence and repeats Fable's review. Tools are `Read,Grep,Glob` under
-`--restricted --strict-mcp-config`. File reads are confined to the working
-directory, which is the repo under review, so run `council` from inside it.
-Command-running tools, user settings and MCP servers are dropped. A judge can
-check a claim against the code. An instruction smuggled into an answer cannot
-make it run anything or read outside the repo. Prompt section markers carry a
-random tag (`[tag …]`). It is fresh for each judging stage and never exported, so
-no advisor can read it and no judge has seen the tag of a later stage. Any
-`[tag ` inside embedded model output is rewritten before embedding. Judges are
-told an untagged "section" is just data. The tag never appears in user-facing
-output. `--restricted` needs a Claude Code that supports it; `council` warns if
-the installed one doesn't.
+- **Your prompts leave your machine.** Questions, and any file you `review`, go
+  to every model on the panel, which means to several companies.
+- **Models run read-only, with different strength.** Claude models can only read
+  the current folder. Codex cannot write but can read outside it. Gemini (`agy`)
+  is told not to use tools, which is an instruction, not a hard block.
+- **A model that does not say how it stays read-only is never used.**
+- **It refuses to run from your home folder or `/`,** so the Claude models are
+  never handed your whole home folder to read. `COUNCIL_ALLOW_BROAD_CWD=1`
+  overrides this.
+- **Files under review are marked as data,** so a file cannot easily pose as
+  instructions. This makes tricks harder; it does not make them impossible.
+- **Each run's temporary files are deleted,** including when you press Ctrl-C.
 
-`-m` names one model, so `ask`, `raw` and `review` refuse it rather than hand,
-say, a Claude alias to codex. Pin panel models in `providers/<id>.conf`. Each
-model call is capped by `COUNCIL_CALL_TIMEOUT` (seconds, default 240, `0` for
-none). It runs under `timeout -k` (`COUNCIL_KILL_GRACE`, default 10 s), so a hung
-or SIGTERM-ignoring CLI cannot stall a round. On BusyBox, which has no `-k`, it
-runs without the grace kill. The whole round also has a soft deadline,
-`COUNCIL_ROUND_TIMEOUT` (default 540 s). Later stages get only the time left,
-and if they run out the round falls back to the decision already made. It is
-soft because calls started near the deadline still get 1 s plus the kill grace.
-With the defaults the worst case is about 572 s, plus at most 5 s for the
-`--restricted` preflight check, which is still under a 600 s caller budget. Without `timeout`/`gtimeout`, calls run uncapped and
-council warns.
+Read [SECURITY.md](SECURITY.md) before using it on sensitive code, and to report
+a problem.
 
-A leftover `claude.conf` from before this split is ignored whenever `opus`
-exists, and council warns about it.
+## Use with Claude Code
 
-## Design notes
+`council` can be set up so Claude Code runs it on its own: for decisions with
+real trade-offs, for code reviews, and for choices that are hard to undo.
+`install.sh` offers this. See
+[integrations/claude-code/README.md](integrations/claude-code/README.md).
 
-Three behaviours that exist because the alternative was observed to fail:
+## Requirements
 
-- **Nothing is gated on exit codes.** Real CLIs exit `0` while producing no
-  answer at all — on auth failure, or when a tool call is silently denied. Every
-  check is on whether real content came back.
-- **A non-zero exit with bytes already written is discarded**, not returned.
-  That is a truncated answer, and half an opinion is worse than none.
-- **Advisors never see each other's drafts.** Independence in round one is the
-  only thing that makes the arbiter's ruling in round two mean anything.
+- `bash` 3.2 or newer (the version that ships with macOS is fine)
+- The command-line tool for each model you want: `claude`, `codex`, `agy`
+
+The automated tests run on macOS and Linux. It has been used on Windows (Git
+Bash), but Windows is not tested automatically.
 
 ## Tests
 
@@ -194,14 +133,13 @@ Three behaviours that exist because the alternative was observed to fail:
 bash test/run-tests.sh
 ```
 
-90 tests, no network, no quota: they run against stub providers in
-`test/fixtures`, including both the agreement and the stalemate branch.
+The tests use fake models, so they need no network and no account. `council
+doctor` checks the real ones, and exits with an error if any check fails.
 
-## Requirements
+## Contributing
 
-`bash` 3.2+ (stock macOS works), plus the CLI of each provider you enable.
-Tested on Windows (Git Bash); written for macOS and Linux by construction.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Licence
+## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
