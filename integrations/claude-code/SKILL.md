@@ -15,6 +15,7 @@ council ask "<question>"        # panel -> arbitration -> synthesis or tiebreak
 council review <file>...        # code review by the panel
 council explore <dir> "<q>"     # hand a repo to a model that reads it itself
 council raw "<question>"        # every advisor verbatim, no judging
+council delegate [-w <worker>] <task-file>   # a worker makes a change on its own branch
 council decisions               # past rounds' recorded decisions
 council revisit <id|file> [evidence]   # reopen a past decision with a fresh panel
 ```
@@ -29,6 +30,19 @@ Long inputs go on stdin rather than argv:
 ```bash
 { echo "<question>"; echo ---; cat <files>; } | council ask
 ```
+
+## Delegating code changes
+
+`council delegate` hands a well-specified change to a worker (`codex-worker`
+by default, which spends Codex quota instead of mine; `-w sonnet-worker`
+otherwise). Use it for changes with a clear acceptance test, not for design
+work. Write a task file (`scope:`, optional `forbid:`, `accept:` (the command
+that decides), a `---` line, then the task) and run it from inside the repo
+with Bash `run_in_background`: a worker may take up to 15 minutes, past the
+foreground limit. Exit 0 = accepted, 8 = rejected. Never merge on the
+worker's word: read the diff (`council review <job>/diff.patch` for anything
+non-trivial), then tell the user the branch and let them merge, or merge only
+if they asked me to.
 
 ## Asking it
 
@@ -89,5 +103,5 @@ change the answer — not whether the topic sounds important.
 
 `council doctor` reports installation and live auth for every provider. Exit
 codes: 2 usage, 3 hop-depth refused, 4 binary missing, 5 no answer produced,
-6 truncated after a mid-stream failure. A non-zero exit is never an answer —
+6 truncated after a mid-stream failure, 8 delegated work rejected. A non-zero exit is never an answer:
 report the failure rather than relaying partial output as advice.

@@ -44,6 +44,7 @@ You sign in to each tool with your normal account. No API key is needed.
 | `council review <file>...` | Have the panel review files |
 | `council explore <dir> "<question>"` | Let one model read a folder itself and answer |
 | `council <model> "<question>"` | Ask one model directly, for example `council codex "..."` |
+| `council delegate <task-file>` | Have a worker model make a code change on its own branch, checked and tested by council |
 | `council decisions` | List what past rounds decided |
 | `council revisit <id\|file> ["<new evidence>"]` | Reopen a past decision with a fresh panel |
 | `council providers` | List the models and whether they are installed |
@@ -110,6 +111,44 @@ the main code are needed. See [docs/adding-a-provider.md](docs/adding-a-provider
 - **Files under review are marked as data,** so a file cannot easily pose as
   instructions. This makes tricks harder; it does not make them impossible.
 - **Each run's temporary files are deleted,** including when you press Ctrl-C.
+- **`delegate` is the only command that writes code,** and only through a
+  worker provider (`codex-worker`, `sonnet-worker`) that never sits on a panel
+  or judges. The worker edits a separate worktree on its own branch; your
+  checkout is never touched and nothing is merged for you. See below.
+
+## Delegating a change
+
+Write a task file:
+
+```
+scope: src/ tests/
+forbid: src/vendor/
+accept: python3 -m pytest -q tests
+---
+test_merge_unsorted fails. Fix the root cause in src/intervals.py.
+```
+
+Then, from inside the repository, `council delegate task.md`. Council:
+
+1. creates a worktree on a new branch `council/delegate/<job>` from `HEAD`
+   (uncommitted changes are not included; it warns);
+2. hands the task to the best available worker (`-w` picks one): `codex-worker`
+   reads and writes only the worktree, with no network and no web tools;
+   `sonnet-worker` has file tools only and no shell;
+3. rejects the change if it leaves `scope`, touches `forbid`, touches git
+   metadata, CI, hooks, lockfiles, `.env` or `policy/` without the scope naming
+   them, rewrites the worktree's git link, or exceeds
+   `COUNCIL_DELEGATE_MAX_LINES`;
+4. commits on the branch and runs `accept` under bubblewrap: no network, only
+   the worktree writable. Without a usable bubblewrap it refuses
+   (`COUNCIL_DELEGATE_SANDBOX=off` overrides, unsandboxed);
+5. prints the result, diffstat, acceptance output and the worker's summary,
+   labelled untrusted. Exit 0 means accepted, 8 rejected. The job's prompt,
+   diff and logs stay in `~/.local/state/council/delegate/<job>/`.
+
+Review and merge yourself: `council review <job>/diff.patch`, then
+`git merge council/delegate/<job>`. A worker gets up to
+`COUNCIL_DELEGATE_TIMEOUT` seconds (default 900).
 
 Read [SECURITY.md](SECURITY.md) before using it on sensitive code, and to report
 a problem.

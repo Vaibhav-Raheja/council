@@ -7,6 +7,9 @@ run it as part of answering, then report what it said.
     council review <file>...        code review by the panel
     council explore <dir> "<q>"     repo handed to a model that reads it itself
     council raw "<question>"        every advisor verbatim, no judging
+    council delegate <task-file>    a worker makes a change on its own branch;
+                                    council checks scope and runs the task's
+                                    acceptance command (run it in the background)
 
 Always pass a Bash `timeout` of at least 600000 ms — a round is several model
 calls and takes minutes; the 120 s default truncates it and looks like failure.
@@ -55,7 +58,8 @@ routing and the no-self-judgement rule are enforced by @COUNCIL_HOME@/policy/rul
 — I do not choose which model answers. Adding an LLM is one file in
 @COUNCIL_HOME@/providers/. `council doctor` checks installation and live auth.
 Exit codes: 2 usage, 3 hop-depth refused, 4 missing binary, 5 no answer,
-6 truncated. A non-zero exit is never an answer.
+6 truncated, 8 delegated work rejected. A non-zero exit is never an answer.
+Never merge a delegated branch on the worker's word: read the diff first.
 
 Roles: panel = sonnet + codex + agy; opus judges (agree/disagree, tiebreak);
 fable makes the final call; the first line of its section is UPHELD /

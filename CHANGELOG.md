@@ -26,6 +26,20 @@ All notable changes to this project are listed here. The format follows
 
 ### Added
 
+- `council delegate [-w <worker>] [--keep] <task-file>`: a worker model makes
+  a code change in a fresh git worktree on its own branch, and council decides
+  whether to keep it without trusting the worker. The diff must stay inside the
+  task's `scope:`, avoid `forbid:` and a protected list (git metadata, CI,
+  hooks, lockfiles, `.env`, `policy/`), keep the worktree's git link intact and
+  stay under `COUNCIL_DELEGATE_MAX_LINES`; council then commits and runs the
+  task's `accept:` command under bubblewrap with no network and only the
+  worktree writable. Exit 0 accepted, 8 rejected. Nothing is merged for you.
+- Worker providers `codex-worker` (reads and writes only its worktree; network,
+  web search, apps and browser off) and `sonnet-worker` (file tools only, no
+  shell). A new invariant, `write-requires-isolation`, keeps workers off every
+  panel and judging seat, refuses calling them directly, and `doctor` skips
+  them. Live check: both fixed the benchmark's debug task, including its
+  hidden second bug.
 - Decision records. Every top-level `ask`, `review` and `revisit` round that
   decides something writes a private Markdown record (question, challenge,
   final call) under `~/.local/state/council/decisions` (`COUNCIL_STATE_DIR`;
