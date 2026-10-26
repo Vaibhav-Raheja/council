@@ -28,11 +28,29 @@ Long inputs go on stdin rather than argv:
 { echo "<question>"; echo ---; cat <files>; } | council ask
 ```
 
+## Asking it
+
+The frame I hand the council decides most of the answer: advisors tend to debate
+inside it. They catch false technical premises, but they accept the question's
+goal. On a replay of a real round, no advisor asked whether the thing I proposed
+to build was worth building at all, even with the frame-testing preamble.
+
+- Do not lead with my own recommendation. If I include it, label it a proposal
+  under attack and ask for the strongest case against it.
+- Mark earlier decisions (mine, the user's, a previous council round's) as
+  hypotheses, unless one is a hard external constraint; then say which and why.
+- Never hand over a closed list of options without asking what lies outside it.
+- Give the evidence (measurements, errors, constraints), not just my conclusion.
+- A past verdict is not settled. When new evidence arrives, re-ask with the
+  evidence instead of building on the old verdict.
+
 ## What it does on its own
 
-Advisors answer independently. An arbiter rules on whether they *materially*
-disagree. On agreement the chair synthesises; on stalemate a model that was not
-in the room casts a binding vote. Routing, panel composition and the
+Advisors answer independently, behind a preamble that makes them test the
+question's premises first. An arbiter rules on whether they *materially*
+disagree, and whether they only echoed the question's frame. On agreement a
+model outside the panel attacks the consensus before Fable may uphold it; on
+stalemate a model that was not in the room casts a binding vote. Routing, panel composition and the
 no-self-judgement rule are enforced by `@COUNCIL_HOME@/policy/rules.conf` — not by me
 and not by the prompt. I do not pick which model answers.
 
@@ -51,6 +69,9 @@ Fable changed anything, say what and whose decision it overrode.
   plainly rather than quietly switching position.
 - Attribute: "Codex found X, Gemini found Y." Do not present their findings as
   my own.
+- Report the "Challenge to the consensus" section: what it attacked, and
+  whether Fable accepted or rejected it. An UPHELD that survived a real
+  challenge means more than one that met none.
 
 ## When NOT to convene
 

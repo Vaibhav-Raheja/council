@@ -1,0 +1,9 @@
+The user now has a $100 Codex plan and Gemini Pro. Today the "council" CLI (bash; providers in providers/*.conf, routing rules in policy/rules.conf) uses Codex (codex exec) and Gemini (agy -p) only as READ-ONLY advisors; invariant write-requires-cap=on means only providers declaring a `write` capability may touch disk, and none do. Claude Code is the user's primary agent.
+
+Question: How should Claude best hand off real work (code edits, implementation) to Codex and Gemini agents? Claude's proposal, in increasing effort:
+ 1. Ad hoc: Claude runs `codex exec -C <worktree> -s workspace-write "<task>"` / `agy -p --mode accept-edits --sandbox "<task>"` in a fresh git worktree, then reviews the diff.
+ 2. Build `council delegate <provider> "<task>"`: add a `write` cap to codex/agy confs, always create a worktree+branch, enforce timeouts, return the diff for review.
+ 3. Build `council fanout spec.md`: split a plan into tasks, dispatch in parallel to best-suited workers, council-review each diff before merge.
+Claude recommends 2 first. Also suggested: Codex for well-specified implementation/tests, Gemini for large-context reads/migrations, Claude as orchestrator; spend extra quota on deeper models (gemini-3.1-pro-high, codex high reasoning).
+
+Is this the right recommendation? What is wrong, missing, or risky (safety, quota, merge conflicts, quality control, whether to build it into council vs a Claude Code skill/MCP)? Give a concrete recommendation.

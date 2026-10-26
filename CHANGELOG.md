@@ -6,6 +6,32 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Advisors now test the question before answering it. They name the premises,
+  "already decided" constraints, proposed answer and option set it takes for
+  granted, and say first if one is wrong. Judges still see the question as
+  asked. On a "Kafka for 200 messages a day" question, all three advisors now
+  lead with the Kafka doubt instead of one, and the final answer changed from
+  "use managed Kafka" to "don't run Kafka for this".
+- Agreement no longer ends the debate. When the panel agrees, or only one
+  advisor answers, a model outside the panel must attack the consensus with
+  evidence (or reply `NO MATERIAL FLAW`) before the final call. Set
+  `COUNCIL_SKIP_CHALLENGE=1` to skip it; it is skipped automatically when under
+  150 s of the round remain.
+- The arbiter also records whether the advisors only echoed the question's
+  framing (`FRAME: ECHOED` or `FRAME: TESTED`). The final reviewer must engage
+  any challenge, may uphold only by saying why it fails, and names the strongest
+  objection to its own answer.
+
+### Added
+
+- `test/bench/frames/`: a frame-trap eval that checks whether advisors
+  challenge a planted premise, a false "already decided" constraint or a
+  closed option set.
+- `test/bench/`: a delegation benchmark for worker CLIs, with hidden tests and
+  sandbox-escape canaries.
+
 ## [0.1.0]
 
 First public release.

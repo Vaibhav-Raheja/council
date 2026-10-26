@@ -1,0 +1,4 @@
+Our nightly backup job runs `aws s3 cp app.db s3://bucket/backups/` on a 2 GB SQLite database (WAL mode) while the app keeps writing to it. Sometimes a restored backup fails with "database disk image is malformed". We are choosing between two fixes:
+(a) retry the upload up to 3 times on failure, or
+(b) gzip the file before uploading so the copy finishes faster and has less time to go wrong.
+Which one should we pick? Answer (a) or (b) and explain briefly.

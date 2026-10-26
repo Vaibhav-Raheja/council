@@ -158,6 +158,42 @@ out="$(run raw "postgres or mongo?")"
 case "$out" in *PostgreSQL*MongoDB*) ok "raw shows every advisor verbatim" ;;
                *) bad "raw shows every advisor verbatim" "$out" ;; esac
 
+# ---------------------------------------------------------------- challenge
+echo
+echo "challenge to the consensus"
+out="$(COUNCIL_TEST_VERDICT=AGREE run ask "postgres or mongo?")"
+case "$out" in *"Challenge to the consensus (judge)"*CHALLENGE-TEXT*"final call (final)"*SAW-CHALLENGE*FINAL-ANSWER*)
+                 ok "AGREE -> a non-advisor attacks the consensus and the final call sees it" ;;
+               *) bad "AGREE -> a non-advisor attacks the consensus and the final call sees it" "$out" ;; esac
+case "$out" in *PREAMBLE-LEAKED*) bad "judges see the question as asked, not the advisor preamble" "$out" ;;
+               *) ok "judges see the question as asked, not the advisor preamble" ;; esac
+
+out="$(COUNCIL_TEST_VERDICT=DISAGREE run ask "postgres or mongo?")"
+case "$out" in *"Challenge to the consensus"*) bad "DISAGREE -> no challenge (the tiebreak is the contest)" "$out" ;;
+               *) ok "DISAGREE -> no challenge (the tiebreak is the contest)" ;; esac
+
+out="$(COUNCIL_TEST_BETA_FAIL=1 run ask "postgres or mongo?")"
+case "$out" in *"Challenge to the consensus (judge)"*"One advisor answered — final call (final)"*SAW-CHALLENGE*)
+                 ok "one advisor answered -> its answer is challenged too" ;;
+               *) bad "one advisor answered -> its answer is challenged too" "$out" ;; esac
+
+out="$(COUNCIL_TEST_VERDICT=AGREE COUNCIL_SKIP_CHALLENGE=1 run ask "postgres or mongo?")"
+case "$out" in *"Challenge to the consensus"*|*SAW-CHALLENGE*) bad "COUNCIL_SKIP_CHALLENGE=1 skips the challenge" "$out" ;;
+               *FINAL-ANSWER*) ok "COUNCIL_SKIP_CHALLENGE=1 skips the challenge" ;;
+               *) bad "COUNCIL_SKIP_CHALLENGE=1 skips the challenge" "$out" ;; esac
+
+out="$(COUNCIL_TEST_VERDICT=AGREE COUNCIL_TEST_CH_FAIL=1 run ask "postgres or mongo?")"
+case "$out" in *"challenge failed"*"final call (final)"*FINAL-ANSWER*) ok "challenge fails -> warns, the final call still happens" ;;
+               *) bad "challenge fails -> warns, the final call still happens" "$out" ;; esac
+
+out="$(COUNCIL_TEST_VERDICT=AGREE COUNCIL_SKIP_FINAL=1 run ask "postgres or mongo?")"
+case "$out" in *"Challenge to the consensus (judge)"*SYNTHESIS*) ok "no final reviewer -> the chair's synthesis follows the challenge" ;;
+               *) bad "no final reviewer -> the chair's synthesis follows the challenge" "$out" ;; esac
+
+out="$(COUNCIL_ROUND_TIMEOUT=100 COUNCIL_TEST_VERDICT=AGREE run ask "postgres or mongo?")"
+case "$out" in *"skipping the challenge"*FINAL-ANSWER*) ok "under 150 s left -> challenge skipped so the final call keeps its time" ;;
+               *) bad "under 150 s left -> challenge skipped so the final call keeps its time" "$out" ;; esac
+
 # ---------------------------------------------------------------- final-call hardening
 echo
 echo "final-call hardening"
@@ -657,6 +693,17 @@ else bad "review tells models about the [file rewrite"; fi
 if grep -q '\[unmarked deadbeef\]' "$cap" && ! grep -q '\[file deadbeef\]' "$cap"
 then ok "a forged [file marker inside a reviewed file is rewritten"; else bad "a forged [file marker inside a reviewed file is rewritten" "$(cat "$cap")"; fi
 rm -rf "$alt" "$cap" "$rf"
+
+# The advisors, and only they, get the frame-testing preamble.
+alt="$(alt_tree)"; cap="$(mktemp)"
+sed -i.bak 's#provider_invoke() { cat >/dev/null;#provider_invoke() { cat > "${COUNCIL_TEST_CAPTURE:-/dev/null}";#' "$alt/providers/alpha.conf"
+out="$(COUNCIL_HOME="$alt" COUNCIL_TEST_CAPTURE="$cap" COUNCIL_TEST_VERDICT=AGREE "$REPO/council" ask "postgres or mongo?" 2>&1 </dev/null)"
+if grep -q "test the question itself" "$cap" && grep -q "already decided or agreed" "$cap" && grep -q "postgres or mongo?" "$cap"
+then ok "advisors get the frame-testing preamble above the question"; else bad "advisors get the frame-testing preamble above the question" "$(cat "$cap")"; fi
+out="$(COUNCIL_HOME="$alt" COUNCIL_TEST_CAPTURE="$cap" "$REPO/council" raw "postgres or mongo?" 2>&1 </dev/null)"
+if grep -q "test the question itself" "$cap"; then ok "raw advisors get the preamble too"
+else bad "raw advisors get the preamble too" "$(cat "$cap")"; fi
+rm -rf "$alt" "$cap"
 d="$(mktemp -d)"
 out="$(run review "$d")"; rc=$?
 rm -rf "$d"

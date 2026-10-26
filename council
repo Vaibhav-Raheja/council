@@ -67,6 +67,7 @@ Questions may arrive on stdin:  cat notes.md | council ask "summarise"
 Env
   COUNCIL_MAX_HOPS   recursion ceiling for self-invocation (default 2)
   COUNCIL_SKIP_FINAL=1  skip the final reviewer; the judge's decision stands
+  COUNCIL_SKIP_CHALLENGE=1  skip the attack on an agreeing panel's consensus
   COUNCIL_CALL_TIMEOUT  per-model-call limit in seconds (default 240, 0 = none)
   COUNCIL_ROUND_TIMEOUT soft whole-round deadline for ask/raw (default 540, 0 = none)
   COUNCIL_KILL_GRACE    seconds between SIGTERM and SIGKILL on timeout (default 10)
@@ -146,7 +147,7 @@ pick_judge() {
 }
 
 cmd_ask() {
-  local q qfile panel n verdict arb out fin RESERVED ARBITER FINAL TB decision f
+  local q qfile aqfile panel n verdict arb out fin chal RESERVED ARBITER FINAL TB CH decision challenge f
   refuse_model_for_panel
   council_preflight_warnings
   q="$(read_question "$@")"
@@ -157,17 +158,20 @@ cmd_ask() {
   panel="$(council_policy_panel "${PANEL_TASK:-advise}" "$AGENTS" $RESERVED | tr '\n' ' ')" || exit 2
   council_log "panel (${PANEL_TASK:-advise}): $panel (held out: ${RESERVED:-none})"
 
+  # Advisors get the question behind a frame-testing preamble; judges get it
+  # as asked, so they can tell whether the advisors questioned its premises.
   qfile="$(mktemp)"; printf '%s' "$q" > "$qfile"
-  convene "$qfile" $panel
+  aqfile="$(mktemp)"; council_advisor_question "$qfile" > "$aqfile"
+  convene "$aqfile" $panel
 
   n="$(answered_count)"
   if [ "$n" -eq 0 ]; then
     echo "council: no advisor produced an answer. Run: council doctor" >&2
-    rm -f "$qfile"; cleanup_answers; exit 5
+    rm -f "$qfile" "$aqfile"; cleanup_answers; exit 5
   fi
 
-  arb="$(mktemp)"; out="$(mktemp)"; fin="$(mktemp)"
-  ARBITER=""; TB=""; decision=""
+  arb="$(mktemp)"; out="$(mktemp)"; fin="$(mktemp)"; chal="$(mktemp)"
+  ARBITER=""; TB=""; CH=""; decision=""; challenge=""
   if [ "$n" -eq 1 ]; then
     council_warn "only one advisor answered; nothing to arbitrate"
     verdict=SINGLE
@@ -200,17 +204,37 @@ cmd_ask() {
     fi
   fi
 
+  # Agreement no longer ends the debate: a model outside the panel attacks it
+  # first. A stalemate already had an adversarial tiebreak, so it is skipped
+  # there. Skipped, too, when the round is nearly out of time, so the final
+  # call is not starved of its own.
+  if [ "$verdict" != "DISAGREE" ]; then
+    if [ "${COUNCIL_SKIP_CHALLENGE:-0}" = "1" ]; then
+      council_log "challenge skipped (COUNCIL_SKIP_CHALLENGE=1)"
+    elif ! council_round_has 150; then
+      council_warn "under 150 s left in the round; skipping the challenge to the consensus"
+    else
+      CH="$(pick_judge tiebreak $panel)"
+      if council_challenge "$CH" "$qfile" "$arb" "$chal" && council_has_content "$chal"; then
+        challenge="$chal"
+        echo "### Challenge to the consensus ($CH)"; echo; cat "$chal"; echo
+      else
+        council_warn "challenge failed or no eligible challenger; the agreement goes unexamined"
+      fi
+    fi
+  fi
+
   # The final reviewer is chosen ONCE, after every other decision-maker is
   # known, and that same id is invoked and reported.
   FINAL=""
   if [ "${COUNCIL_SKIP_FINAL:-0}" = "1" ]; then
     council_log "final review skipped (COUNCIL_SKIP_FINAL=1)"
   else
-    FINAL="$(council_policy_judge finalize $panel $ARBITER $TB 2>/dev/null || true)"
+    FINAL="$(council_policy_judge finalize $panel $ARBITER $TB $CH 2>/dev/null || true)"
     [ -n "$FINAL" ] || council_warn "no eligible final reviewer; the judge's decision stands"
   fi
 
-  if [ -n "$FINAL" ] && council_finalize "$FINAL" "$qfile" "$arb" "$decision" "$TB" "$fin"; then
+  if [ -n "$FINAL" ] && council_finalize "$FINAL" "$qfile" "$arb" "$decision" "$TB" "$fin" "$challenge" "$CH"; then
     case "$verdict" in
       AGREE)    echo "## Panel agreed — final call ($FINAL)" ;;
       SINGLE)   echo "## One advisor answered — final call ($FINAL)" ;;
@@ -226,7 +250,7 @@ cmd_ask() {
     [ -n "$FINAL" ] && council_warn "final reviewer '$FINAL' failed or gave a malformed call; the judge's decision stands"
     case "$verdict" in
       AGREE)
-        if council_synthesize "$(pick_judge synthesize $panel)" "$qfile" "$out"; then cat "$out"
+        if council_synthesize "$(pick_judge synthesize $panel)" "$qfile" "$out" "$challenge"; then cat "$out"
         else council_warn "synthesis failed; raw answers follow"
              council_render_answers "${COUNCIL_ANSWER_FILES[@]}"; fi ;;
       SINGLE)
@@ -241,11 +265,11 @@ cmd_ask() {
         fi ;;
     esac
   fi
-  rm -f "$qfile" "$arb" "$out" "$fin"; cleanup_answers
+  rm -f "$qfile" "$aqfile" "$arb" "$out" "$fin" "$chal"; cleanup_answers
 }
 
 cmd_raw() {
-  local q qfile panel id i f RESERVED
+  local q qfile aqfile panel id i f RESERVED
   refuse_model_for_panel
   council_preflight_warnings
   q="$(read_question "$@")"
@@ -253,7 +277,8 @@ cmd_raw() {
   RESERVED="$(council_policy_reserved | tr '\n' ' ')"
   panel="$(council_policy_panel advise "$AGENTS" $RESERVED | tr '\n' ' ')" || exit 2
   qfile="$(mktemp)"; printf '%s' "$q" > "$qfile"
-  convene "$qfile" $panel
+  aqfile="$(mktemp)"; council_advisor_question "$qfile" > "$aqfile"
+  convene "$aqfile" $panel
   i=0
   for id in $panel; do
     echo "===== $(council_provider_meta "$id" PROVIDER_LABEL) ====="
@@ -262,7 +287,7 @@ cmd_raw() {
     echo
     i=$(( i + 1 ))
   done
-  rm -f "$qfile"; cleanup_answers
+  rm -f "$qfile" "$aqfile"; cleanup_answers
 }
 
 cmd_provider() {

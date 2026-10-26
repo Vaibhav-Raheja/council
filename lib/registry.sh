@@ -260,6 +260,14 @@ council_call_timeout() {
   echo "$limit"
 }
 
+# True when the round has no deadline or at least $1 seconds of it remain.
+council_round_has() {
+  case "${COUNCIL_DEADLINE:-}" in
+    ''|*[!0-9]*) return 0 ;;
+    *) [ $(( COUNCIL_DEADLINE - $(date +%s) )) -ge "$1" ] ;;
+  esac
+}
+
 # Start the round clock: export COUNCIL_DEADLINE = now + COUNCIL_ROUND_TIMEOUT
 # (default 540, under a 600 s caller budget; 0 = no round deadline).
 council_start_round_clock() {
