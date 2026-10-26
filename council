@@ -37,6 +37,7 @@ fi
 . "$COUNCIL_HOME/lib/registry.sh"
 . "$COUNCIL_HOME/lib/policy.sh"
 . "$COUNCIL_HOME/lib/consensus.sh"
+. "$COUNCIL_HOME/lib/decisions.sh"
 
 COUNCIL_VERSION=0.1.0
 
@@ -49,6 +50,10 @@ council — several AI CLIs, hard rules about who does what.
   council review <file>...     review files (contents are fed in)
   council explore <dir> <q>    hand a repo to a model that reads it itself
   council <provider> <q>       call one provider directly (e.g. council codex ...)
+
+  council decisions            past rounds' recorded decisions, newest first
+  council revisit <id|file> [evidence]
+                               reopen a past decision with a fresh panel
 
   council providers            registered providers, capabilities, availability
   council roles                what each provider is best at
@@ -68,6 +73,8 @@ Env
   COUNCIL_MAX_HOPS   recursion ceiling for self-invocation (default 2)
   COUNCIL_SKIP_FINAL=1  skip the final reviewer; the judge's decision stands
   COUNCIL_SKIP_CHALLENGE=1  skip the attack on an agreeing panel's consensus
+  COUNCIL_NO_RECORD=1   do not write a decision record for this round
+  COUNCIL_STATE_DIR     where decision records live (default ~/.local/state/council)
   COUNCIL_CALL_TIMEOUT  per-model-call limit in seconds (default 240, 0 = none)
   COUNCIL_ROUND_TIMEOUT soft whole-round deadline for ask/raw (default 540, 0 = none)
   COUNCIL_KILL_GRACE    seconds between SIGTERM and SIGKILL on timeout (default 10)
@@ -148,6 +155,7 @@ pick_judge() {
 
 cmd_ask() {
   local q qfile aqfile panel n verdict arb out fin chal RESERVED ARBITER FINAL TB CH decision challenge f
+  local rec_answer="" rec_word="" rec_id
   refuse_model_for_panel
   council_preflight_warnings
   q="$(read_question "$@")"
@@ -246,26 +254,66 @@ cmd_ask() {
     esac
     echo
     cat "$fin"
+    rec_answer="$fin"; rec_word="$(council_first_word "$fin")"
   else
     [ -n "$FINAL" ] && council_warn "final reviewer '$FINAL' failed or gave a malformed call; the judge's decision stands"
     case "$verdict" in
       AGREE)
-        if council_synthesize "$(pick_judge synthesize $panel)" "$qfile" "$out" "$challenge"; then cat "$out"
+        if council_synthesize "$(pick_judge synthesize $panel)" "$qfile" "$out" "$challenge"; then
+          cat "$out"; rec_answer="$out"
         else council_warn "synthesis failed; raw answers follow"
              council_render_answers "${COUNCIL_ANSWER_FILES[@]}"; fi ;;
       SINGLE)
         council_warn "reporting the single answer unjudged"
-        for f in "${COUNCIL_ANSWER_FILES[@]}"; do council_has_content "$f" && cat "$f"; done ;;
+        for f in "${COUNCIL_ANSWER_FILES[@]}"; do
+          council_has_content "$f" && { cat "$f"; rec_answer="$f"; }
+        done ;;
       DISAGREE)
         if [ -n "$decision" ]; then
-          echo "### Binding verdict ($TB)"; echo; cat "$decision"
+          echo "### Binding verdict ($TB)"; echo; cat "$decision"; rec_answer="$decision"
         else
           council_warn "no verdict; presenting the positions unresolved"
           council_render_answers "${COUNCIL_ANSWER_FILES[@]}"
         fi ;;
     esac
   fi
+  # An unresolved stalemate decided nothing, so it leaves no record.
+  if [ -n "$rec_answer" ]; then
+    rec_id="$(council_record_decision "${RECORD_CMD:-ask}" "$qfile" "$verdict" "$rec_word" \
+                "$rec_answer" "$challenge" "${RECORD_REVISITS:-}")"
+    [ -n "$rec_id" ] && council_warn "recorded as decision $rec_id (reopen with: council revisit $rec_id)"
+  fi
   rm -f "$qfile" "$aqfile" "$arb" "$out" "$fin" "$chal"; cleanup_answers
+}
+
+cmd_decisions() {
+  local dir f n=0
+  dir="$(council_decisions_dir)"
+  printf '%-22s %-9s %-11s %-9s %s\n' ID COMMAND FINAL VERDICT QUESTION
+  for f in $(ls -1r "$dir"/*.md 2>/dev/null); do
+    printf '%-22s %-9s %-11s %-9s %s\n' "$(basename "$f" .md)" \
+      "$(council_decision_field "$f" command)" "$(council_decision_field "$f" final)" \
+      "$(council_decision_field "$f" verdict)" "$(council_decision_title "$f")"
+    n=$(( n + 1 ))
+  done
+  [ "$n" -gt 0 ] || echo "(no decisions recorded in $dir)"
+}
+
+# Reopen a past decision: the record (or any decision written to a file) plus
+# new evidence, as a normal round. The round is recorded with a back-link.
+cmd_revisit() {
+  local ref rec evid qtmp rid
+  [ $# -ge 1 ] || { echo "council: revisit needs a decision id or file (see: council decisions)" >&2; exit 2; }
+  ref="$1"; shift
+  rec="$(council_find_decision "$ref")" || exit 2
+  case "$rec" in "$(council_decisions_dir)"/*) rid="$(basename "$rec" .md)" ;; *) rid="$rec" ;; esac
+  evid="$(mktemp)"
+  [ $# -gt 0 ] && printf '%s\n' "$*" > "$evid"
+  [ ! -t 0 ] && cat >> "$evid"
+  qtmp="$(mktemp)"
+  council_revisit_question "$rec" "$evid" "$(council_file_tag)" > "$qtmp"
+  RECORD_CMD=revisit RECORD_REVISITS="$rid" cmd_ask < "$qtmp"
+  rm -f "$evid" "$qtmp"
 }
 
 cmd_raw() {
@@ -355,7 +403,7 @@ cmd_review() {
   # INT/TERM trap finds no jobs and Ctrl-C leaves them sending the files to
   # vendors. An exit inside cmd_ask is fine: $tmp is in the private TMPDIR,
   # which the EXIT trap removes. Reviews route by the 'review' task.
-  PANEL_TASK=review cmd_ask < "$tmp"
+  PANEL_TASK=review RECORD_CMD=review cmd_ask < "$tmp"
   rm -f "$tmp"
 }
 
@@ -533,8 +581,8 @@ council_depth_guard council
 # directory, and given a private temp dir. doctor's PONG prompt reads nothing.
 calls_model=0
 case "${1:-}" in
-  ask|raw|review|explore) calls_model=1 ;;
-  providers|roles|rules|doctor|install|""|help) ;;
+  ask|raw|review|explore|revisit) calls_model=1 ;;
+  providers|roles|rules|doctor|install|decisions|""|help) ;;
   *) council_provider_file "$1" >/dev/null 2>&1 && calls_model=1 ;;
 esac
 if [ "$calls_model" = 1 ]; then
@@ -550,6 +598,8 @@ case "${1:-}" in
   raw)       shift; cmd_raw "$@" ;;
   review)    shift; cmd_review "$@" ;;
   explore)   shift; [ $# -ge 1 ] || council_die "explore needs a directory"; cmd_explore "$@" ;;
+  revisit)   shift; cmd_revisit "$@" ;;
+  decisions) cmd_decisions ;;
   providers) cmd_providers ;;
   roles)     cmd_roles ;;
   rules)     cmd_rules ;;

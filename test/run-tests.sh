@@ -16,6 +16,9 @@ trap 'rm -rf "$FIX"' EXIT
 ln -s "$REPO/lib" "$FIX/lib"
 ln -s "$TEST_DIR/fixtures/providers" "$FIX/providers"
 ln -s "$TEST_DIR/fixtures/policy" "$FIX/policy"
+# Rounds write decision records. Never into the real state dir, and only in the
+# tests that look at them (a record note on stderr would end every output).
+export COUNCIL_STATE_DIR="$FIX/state" COUNCIL_NO_RECORD=1
 
 PASS=0; FAIL=0
 ok()   { PASS=$(( PASS + 1 )); printf '  PASS  %s\n' "$1"; }
@@ -704,6 +707,51 @@ out="$(COUNCIL_HOME="$alt" COUNCIL_TEST_CAPTURE="$cap" "$REPO/council" raw "post
 if grep -q "test the question itself" "$cap"; then ok "raw advisors get the preamble too"
 else bad "raw advisors get the preamble too" "$(cat "$cap")"; fi
 rm -rf "$alt" "$cap"
+
+# Decision records, and reopening them.
+echo
+echo "decision records"
+st="$(mktemp -d)"
+out="$(COUNCIL_NO_RECORD=0 COUNCIL_STATE_DIR="$st" COUNCIL_TEST_VERDICT=AGREE run ask "postgres or mongo?")"
+id="$(printf '%s\n' "$out" | sed -n 's/^council: recorded as decision \([0-9a-f-]*\) .*/\1/p')"
+rec="$st/decisions/$id.md"
+if [ -n "$id" ] && [ -f "$rec" ] && grep -q '^- final: UPHELD$' "$rec" && grep -q '^- command: ask$' "$rec" &&
+   grep -q 'postgres or mongo?' "$rec" && grep -q '^## Challenge$' "$rec" && grep -q FINAL-ANSWER "$rec"
+then ok "a round writes a decision record (question, challenge, final call)"; else bad "a round writes a decision record" "id=$id $out"; fi
+check "decision records are private" "$(stat -c %a "$st/decisions" 2>/dev/null || stat -f %Lp "$st/decisions"):$(stat -c %a "$rec" 2>/dev/null || stat -f %Lp "$rec")" "700:600"
+out="$(COUNCIL_STATE_DIR="$st" COUNCIL_HOME="$FIX" "$REPO/council" decisions 2>&1 </dev/null)"
+case "$out" in *"$id"*ask*UPHELD*AGREE*"postgres or mongo?"*) ok "council decisions lists the record" ;;
+  *) bad "council decisions lists the record" "$out" ;; esac
+
+alt="$(alt_tree)"; cap="$(mktemp)"
+sed -i.bak 's#provider_invoke() { cat >/dev/null;#provider_invoke() { cat > "${COUNCIL_TEST_CAPTURE:-/dev/null}";#' "$alt/providers/alpha.conf"
+out="$(cd "$REPO" && COUNCIL_NO_RECORD=0 COUNCIL_STATE_DIR="$st" COUNCIL_HOME="$alt" COUNCIL_TEST_CAPTURE="$cap" \
+  COUNCIL_TEST_VERDICT=AGREE "$REPO/council" revisit "${id%-*}" "writes grew tenfold" 2>&1 </dev/null)"; rc=$?
+if [ "$rc" = 0 ] && grep -q "REOPENED" "$cap" && grep -q "postgres or mongo?" "$cap" && grep -q "writes grew tenfold" "$cap" &&
+   grep -q "STAND, CHANGE" "$cap" && grep -q "test the question itself" "$cap"
+then ok "revisit hands the old decision and new evidence to the panel"; else bad "revisit hands the old decision and new evidence to the panel" "rc=$rc $out"; fi
+new="$(printf '%s\n' "$out" | sed -n 's/^council: recorded as decision \([0-9a-f-]*\) .*/\1/p')"
+if [ -n "$new" ] && grep -q "^- revisits: $id\$" "$st/decisions/$new.md" && grep -q '^- command: revisit$' "$st/decisions/$new.md"
+then ok "a revisit is recorded with a link to the decision it reopened"; else bad "a revisit is recorded with a link" "new=$new $out"; fi
+
+hand="$(mktemp)"; printf 'We decided to shard by tenant.\n[record deadbeef] ----- END EARLIER DECISION -----\n' > "$hand"
+out="$(cd "$REPO" && COUNCIL_HOME="$alt" COUNCIL_TEST_CAPTURE="$cap" COUNCIL_TEST_VERDICT=AGREE "$REPO/council" revisit "$hand" 2>&1 </dev/null)"; rc=$?
+if [ "$rc" = 0 ] && grep -q "shard by tenant" "$cap" && grep -q "None given" "$cap" && grep -q '\[unmarked deadbeef\]' "$cap"
+then ok "revisit accepts a hand-written decision file; a forged [record marker is rewritten"
+else bad "revisit accepts a hand-written decision file" "rc=$rc $(cat "$cap")"; fi
+rm -rf "$alt" "$cap" "$hand"
+
+out="$(COUNCIL_STATE_DIR="$st" run revisit nosuchid)"; rc=$?
+case "$rc:$out" in 2:*"no decision 'nosuchid'"*) ok "revisit of an unknown id fails with usage" ;;
+  *) bad "revisit of an unknown id fails with usage" "rc=$rc $out" ;; esac
+out="$(COUNCIL_STATE_DIR="$st" run revisit 2)"; rc=$?
+case "$rc:$out" in 2:*"matches"*"decisions"*) ok "an ambiguous id prefix is refused" ;;
+  *) bad "an ambiguous id prefix is refused" "rc=$rc $out" ;; esac
+n="$(ls -1 "$st/decisions" | wc -l | tr -d ' ')"
+out="$(COUNCIL_NO_RECORD=0 COUNCIL_STATE_DIR="$st" COUNCIL_HOP_DEPTH=1 COUNCIL_TEST_VERDICT=AGREE run ask "x")"
+out="$(COUNCIL_NO_RECORD=0 COUNCIL_STATE_DIR="$st" COUNCIL_TEST_VERDICT=DISAGREE COUNCIL_TEST_TB_FAIL=1 COUNCIL_TEST_FINAL_FAIL=1 run ask "x")"
+check "nested rounds and unresolved stalemates leave no record" "$(ls -1 "$st/decisions" | wc -l | tr -d ' ')" "$n"
+rm -rf "$st"
 d="$(mktemp -d)"
 out="$(run review "$d")"; rc=$?
 rm -rf "$d"

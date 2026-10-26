@@ -15,6 +15,8 @@ council ask "<question>"        # panel -> arbitration -> synthesis or tiebreak
 council review <file>...        # code review by the panel
 council explore <dir> "<q>"     # hand a repo to a model that reads it itself
 council raw "<question>"        # every advisor verbatim, no judging
+council decisions               # past rounds' recorded decisions
+council revisit <id|file> [evidence]   # reopen a past decision with a fresh panel
 ```
 
 Always pass an explicit Bash `timeout` of at least **600000 ms**. A panel round
@@ -41,8 +43,11 @@ to build was worth building at all, even with the frame-testing preamble.
   hypotheses, unless one is a hard external constraint; then say which and why.
 - Never hand over a closed list of options without asking what lies outside it.
 - Give the evidence (measurements, errors, constraints), not just my conclusion.
-- A past verdict is not settled. When new evidence arrives, re-ask with the
-  evidence instead of building on the old verdict.
+- A past verdict is not settled. When new evidence arrives (a benchmark, a
+  failure, a changed constraint), run `council revisit <id> < evidence.md`
+  instead of building on the old verdict. Every round is recorded; `council
+  decisions` lists them. A decision from before records existed can be
+  revisited from a file that states the question and what was decided.
 
 ## What it does on its own
 

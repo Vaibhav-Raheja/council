@@ -26,6 +26,15 @@ All notable changes to this project are listed here. The format follows
 
 ### Added
 
+- Decision records. Every top-level `ask`, `review` and `revisit` round that
+  decides something writes a private Markdown record (question, challenge,
+  final call) under `~/.local/state/council/decisions` (`COUNCIL_STATE_DIR`;
+  `COUNCIL_NO_RECORD=1` skips it). `council decisions` lists them.
+- `council revisit <id|file> [evidence]`: reopen a past decision with new
+  evidence. A fresh panel must first give the strongest reasons it may now be
+  wrong, then rule STAND, CHANGE or REVERSE. The new round records a link to
+  the one it reopened. Takes a hand-written file for decisions made before
+  records existed.
 - `test/bench/frames/`: a frame-trap eval that checks whether advisors
   challenge a planted premise, a false "already decided" constraint or a
   closed option set.

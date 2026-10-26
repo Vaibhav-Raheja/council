@@ -44,6 +44,8 @@ You sign in to each tool with your normal account. No API key is needed.
 | `council review <file>...` | Have the panel review files |
 | `council explore <dir> "<question>"` | Let one model read a folder itself and answer |
 | `council <model> "<question>"` | Ask one model directly, for example `council codex "..."` |
+| `council decisions` | List what past rounds decided |
+| `council revisit <id\|file> ["<new evidence>"]` | Reopen a past decision with a fresh panel |
 | `council providers` | List the models and whether they are installed |
 | `council roles` | Show what each model is good at |
 | `council rules` | Show the routing rules |
