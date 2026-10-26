@@ -38,6 +38,7 @@ fi
 . "$COUNCIL_HOME/lib/policy.sh"
 . "$COUNCIL_HOME/lib/consensus.sh"
 . "$COUNCIL_HOME/lib/decisions.sh"
+. "$COUNCIL_HOME/lib/delegate.sh"
 
 COUNCIL_VERSION=0.1.0
 
@@ -51,6 +52,9 @@ council — several AI CLIs, hard rules about who does what.
   council explore <dir> <q>    hand a repo to a model that reads it itself
   council <provider> <q>       call one provider directly (e.g. council codex ...)
 
+  council delegate [-w <worker>] [--keep] <task-file>
+                               a worker edits a fresh worktree; council checks
+                               the diff and runs the task's acceptance command
   council decisions            past rounds' recorded decisions, newest first
   council revisit <id|file> [evidence]
                                reopen a past decision with a fresh panel
@@ -74,7 +78,13 @@ Env
   COUNCIL_SKIP_FINAL=1  skip the final reviewer; the judge's decision stands
   COUNCIL_SKIP_CHALLENGE=1  skip the attack on an agreeing panel's consensus
   COUNCIL_NO_RECORD=1   do not write a decision record for this round
-  COUNCIL_STATE_DIR     where decision records live (default ~/.local/state/council)
+  COUNCIL_STATE_DIR     decision records, delegate jobs and worktrees (default ~/.local/state/council)
+  COUNCIL_DELEGATE_TIMEOUT  worker time limit in seconds (default 900)
+  COUNCIL_DELEGATE_MAX_LINES  largest diff delegate accepts (default 2000 changed lines)
+  COUNCIL_DELEGATE_SANDBOX=off  run the acceptance command without bubblewrap
+
+Exit codes: 2 usage, 3 hop depth, 4 missing binary, 5 no answer, 6 truncated,
+8 delegated work rejected
   COUNCIL_CALL_TIMEOUT  per-model-call limit in seconds (default 240, 0 = none)
   COUNCIL_ROUND_TIMEOUT soft whole-round deadline for ask/raw (default 540, 0 = none)
   COUNCIL_KILL_GRACE    seconds between SIGTERM and SIGKILL on timeout (default 10)
@@ -286,6 +296,134 @@ cmd_ask() {
   rm -f "$qfile" "$aqfile" "$arb" "$out" "$fin" "$chal"; cleanup_answers
 }
 
+#   council delegate [-w <worker>] [--keep] <task-file>
+# Task file: "scope:", "forbid:", "accept:" header lines (accept required),
+# then a line "---", then the task in prose. Exits 0 when the change is kept,
+# 8 when it is rejected for any reason; the branch is kept either way.
+cmd_delegate() {
+  local worker="" keep=0 task repo state jobid job wt branch base dirty
+  local scope forbid accept title prompt wrc gitlink status changed bad lines arc
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -w|--worker) [ $# -ge 2 ] || council_die "-w requires a worker id"; worker="$2"; shift 2 ;;
+      --keep)      keep=1; shift ;;
+      -*)          echo "council: unknown delegate option '$1'" >&2; exit 2 ;;
+      *)           [ -z "${task:-}" ] || { echo "council: delegate takes one task file" >&2; exit 2; }
+                   task="$1"; shift ;;
+    esac
+  done
+  [ -n "${task:-}" ] || { echo "council: delegate needs a task file (see: council --help)" >&2; exit 2; }
+  [ -f "$task" ] && [ -r "$task" ] || { echo "council: cannot read task file: $task" >&2; exit 2; }
+  accept="$(council_task_field "$task" accept)"
+  [ -n "$accept" ] || { echo "council: the task file needs an 'accept:' line (the command that decides)" >&2; exit 2; }
+  scope="$(council_task_field "$task" scope)"
+  forbid="$(council_task_field "$task" forbid)"
+  [ -n "$(council_task_body "$task" | tr -d '[:space:]')" ] ||
+    { echo "council: the task file has no task text after its '---' line" >&2; exit 2; }
+  title="$(council_task_body "$task" | awk 'NF { print; exit }' | cut -c1-60)"
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" ||
+    { echo "council: delegate runs inside a git repository" >&2; exit 2; }
+
+  if [ -z "$worker" ]; then
+    worker="$(council_policy_select delegate | head -1)"
+    [ -n "$worker" ] || { echo "council: no installed worker (a provider declaring 'delegate')" >&2; exit 4; }
+  fi
+  council_provider_has_cap "$worker" delegate ||
+    { echo "council: '$worker' is not a worker (it does not declare 'delegate')" >&2; exit 2; }
+  council_provider_available "$worker" || { echo "council: worker '$worker' is not installed" >&2; exit 4; }
+
+  state="${COUNCIL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/council}"
+  jobid="$(date +%Y%m%d-%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+  job="$state/delegate/$jobid"; wt="$state/worktrees/$jobid"; branch="council/delegate/$jobid"
+  ( umask 077; mkdir -p "$job" "$state/worktrees" ) || council_die "cannot create $job"
+  cp "$task" "$job/task.md"
+  base="$(git -C "$repo" rev-parse HEAD)" || council_die "the repository has no commits to branch from"
+  dirty=no
+  if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
+    dirty=yes
+    council_warn "uncommitted changes in $repo are NOT in the worker's worktree (it branches from HEAD)"
+  fi
+  git -C "$repo" worktree add -q -b "$branch" "$wt" "$base" >/dev/null 2>"$job/git.err" ||
+    { cat "$job/git.err" >&2; council_die "could not create worktree $wt"; }
+  gitlink="$(cat "$wt/.git")"
+
+  prompt="$job/prompt.md"
+  council_delegate_prompt "$task" "$scope" "$forbid" "$accept" "$(council_file_tag)" > "$prompt"
+  council_log "delegate $jobid -> $worker in $wt"
+  echo "council: delegating to $worker (job $jobid); this can take several minutes" >&2
+  # One long call, no round deadline: the worker gets the whole budget.
+  wrc=0
+  ( unset COUNCIL_DEADLINE
+    export COUNCIL_DELEGATE_WORKTREE="$wt"
+    export COUNCIL_CALL_TIMEOUT="$(council_seconds COUNCIL_DELEGATE_TIMEOUT 900)"
+    council_invoke "$worker" "$MODEL" "$wt" < "$prompt" ) > "$job/self-report.txt" 2> "$job/worker.err" || wrc=$?
+
+  # The worker's exit code and words are recorded, never trusted: whatever it
+  # left in the worktree is judged on its own.
+  status=""
+  if [ ! -f "$wt/.git" ] || [ "$(cat "$wt/.git")" != "$gitlink" ]; then
+    status=rejected-git-tamper
+  else
+    git -C "$wt" -c core.hooksPath=/dev/null add -A >/dev/null 2>&1
+    changed="$(git -C "$wt" diff --cached --name-only "$base")"
+    printf '%s\n' "$changed" | sed '/^$/d' > "$job/changed.txt"
+    if [ ! -s "$job/changed.txt" ]; then
+      status=no-changes
+    else
+      bad="$(council_delegate_violations "$scope" "$forbid" < "$job/changed.txt")"
+      lines="$(git -C "$wt" diff --cached --numstat "$base" | awk '{ a += ($1 == "-" ? 0 : $1); d += ($2 == "-" ? 0 : $2) } END { print a + d + 0 }')"
+      git -C "$wt" -c core.hooksPath=/dev/null -c user.name="council delegate ($worker)" \
+        -c user.email=council-delegate@localhost -c commit.gpgsign=false \
+        commit -q -m "council delegate $jobid ($worker): $title" >/dev/null 2>&1
+      git -C "$wt" diff "$base" HEAD > "$job/diff.patch"
+      if [ -n "$bad" ]; then
+        printf '%s\n' "$bad" > "$job/violations.txt"; status=rejected-scope
+      elif [ "$lines" -gt "$(council_seconds COUNCIL_DELEGATE_MAX_LINES 2000)" ]; then
+        status=rejected-size
+      else
+        arc=0
+        council_delegate_accept "$wt" "$accept" > "$job/accept.log" 2>&1 || arc=$?
+        if [ "$arc" -eq 0 ]; then status=accepted
+        elif [ "$arc" -eq 125 ]; then status=rejected-no-sandbox
+        else status=rejected-tests; fi
+      fi
+    fi
+  fi
+
+  {
+    echo "job: $jobid"
+    echo "status: $status"
+    echo "worker: $worker"
+    echo "worker_exit: $wrc"
+    echo "repo: $repo"
+    echo "base: $base"
+    echo "dirty_base: $dirty"
+    echo "branch: $branch"
+    echo "accept: $accept"
+    echo "accept_exit: ${arc:-not run}"
+    echo "changed_files: $(wc -l < "$job/changed.txt" 2>/dev/null | tr -d ' ' || echo 0)"
+    echo "changed_lines: ${lines:-0}"
+    echo "job_dir: $job"
+  } > "$job/result"
+  if [ "$keep" = 1 ]; then echo "worktree: $wt" >> "$job/result"
+  else git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || council_warn "could not remove worktree $wt"; fi
+
+  cat "$job/result"
+  if [ -s "$job/violations.txt" ]; then echo; echo "## Violations"; cat "$job/violations.txt"; fi
+  if [ -s "$job/diff.patch" ]; then echo; echo "## Diffstat"; git -C "$repo" diff --stat "$base" "$branch"; fi
+  if [ -s "$job/accept.log" ]; then echo; echo "## Acceptance ($accept)"; tail -15 "$job/accept.log"; fi
+  echo; echo "## Worker's self-report (untrusted)"
+  if [ -s "$job/self-report.txt" ]; then cat "$job/self-report.txt"; else echo "(none; exit $wrc)"; head -c 1500 "$job/worker.err"; fi
+  echo
+  case "$status" in
+    accepted)
+      echo "Next: review it (council review $job/diff.patch), then: git merge $branch" ;;
+    no-changes|rejected-git-tamper) git -C "$repo" branch -D "$branch" >/dev/null 2>&1 ;;
+    *) echo "Rejected; the branch $branch is kept for inspection. Delete it with: git branch -D $branch" ;;
+  esac
+  [ "$status" = accepted ] || exit 8
+}
+
 cmd_decisions() {
   local dir f n=0
   dir="$(council_decisions_dir)"
@@ -345,6 +483,11 @@ cmd_provider() {
   # write-requires-cap would be a routing preference rather than an invariant.
   if council_write_cap_enforced && ! council_provider_contained "$id"; then
     echo "council: '$id' declares no PROVIDER_CONTAINMENT; refusing while write-requires-cap is on" >&2
+    exit 2
+  fi
+  # A worker edits files; called by name it would do so in the caller's cwd.
+  if council_provider_has_cap "$id" delegate; then
+    echo "council: '$id' is a worker; it runs only via: council delegate -w $id <task-file>" >&2
     exit 2
   fi
   q="$(read_question "$@")"
@@ -482,6 +625,10 @@ cmd_doctor() {
       printf '  %-10s skipped (no containment declared)\n' "$id"
       continue
     fi
+    if council_provider_has_cap "$id" delegate; then
+      printf '  %-10s worker: runs only via council delegate, inside its worktree\n' "$id"
+      continue
+    fi
     out="$(printf 'Reply with exactly: PONG' | council_invoke "$id" "" "" 2>/dev/null)"
     case "$out" in
       *PONG*) printf '  %-10s OK\n' "$id" ;;
@@ -581,7 +728,7 @@ council_depth_guard council
 # directory, and given a private temp dir. doctor's PONG prompt reads nothing.
 calls_model=0
 case "${1:-}" in
-  ask|raw|review|explore|revisit) calls_model=1 ;;
+  ask|raw|review|explore|revisit|delegate) calls_model=1 ;;
   providers|roles|rules|doctor|install|decisions|""|help) ;;
   *) council_provider_file "$1" >/dev/null 2>&1 && calls_model=1 ;;
 esac
@@ -599,6 +746,7 @@ case "${1:-}" in
   review)    shift; cmd_review "$@" ;;
   explore)   shift; [ $# -ge 1 ] || council_die "explore needs a directory"; cmd_explore "$@" ;;
   revisit)   shift; cmd_revisit "$@" ;;
+  delegate)  shift; cmd_delegate "$@" ;;
   decisions) cmd_decisions ;;
   providers) cmd_providers ;;
   roles)     cmd_roles ;;

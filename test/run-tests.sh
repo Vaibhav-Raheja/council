@@ -73,7 +73,7 @@ echo
 echo "registry"
 ids="$(run providers | awk 'NR>1{print $1}' | sort | tr '\n' ' ')"
 # Listing is not eligibility: loose makes no containment claim but is listed.
-check "stub providers discovered" "$ids" "alpha beta final judge loose "
+check "stub providers discovered" "$ids" "alpha beta final judge loose worker "
 
 caps="$(COUNCIL_HOME="$FIX" bash -c '. "$0/lib/common.sh"; . "$0/lib/registry.sh"; council_provider_meta alpha PROVIDER_CAPS' "$FIX")"
 check "provider metadata readable" "$caps" "reason review"
@@ -534,7 +534,7 @@ ln -s "$TEST_DIR/fixtures/policy" "$sp/policy"
 ids="$(COUNCIL_HOME="$sp" "$REPO/council" providers 2>&1 </dev/null | awk 'NR>1{print $1}' | sort | tr '\n' ' ')"
 out="$(COUNCIL_HOME="$sp" COUNCIL_TEST_VERDICT=AGREE "$REPO/council" ask "postgres or mongo?" 2>&1 </dev/null)"
 rm -rf "$(dirname "$sp")"
-check "a COUNCIL_HOME containing a space finds its providers" "$ids" "alpha beta final judge loose "
+check "a COUNCIL_HOME containing a space finds its providers" "$ids" "alpha beta final judge loose worker "
 case "$out" in *FINAL-ANSWER*) ok "a COUNCIL_HOME containing a space runs a round" ;;
   *) bad "a COUNCIL_HOME containing a space runs a round" "$out" ;; esac
 
@@ -819,6 +819,96 @@ out="$(COUNCIL_HOME="$alt" "$REPO/council" doctor 2>&1 </dev/null)"; rc=$?
 rm -rf "$alt"
 case "$rc:$out" in 0:*"call timeout:"*) ok "doctor exits 0 when every installed provider answers" ;;
   *) bad "doctor exits 0 when every installed provider answers" "rc=$rc $out" ;; esac
+
+# ---------------------------------------------------------------- delegate
+echo
+echo "delegate"
+# A throwaway repo with one commit, and a task scoped to src/.
+mkrepo() { r="$(mktemp -d)"; git -C "$r" init -q; mkdir -p "$r/src"; echo base > "$r/src/fix.txt"
+  git -C "$r" -c user.name=t -c user.email=t@t add -A; git -C "$r" -c user.name=t -c user.email=t@t commit -qm base; echo "$r"; }
+taskf="$(mktemp)"
+printf 'scope: src/\nforbid: src/secret/\naccept: grep -q fixed src/fix.txt\n---\nFix src/fix.txt so it says fixed.\n' > "$taskf"
+st="$(mktemp -d)"
+dg() {  # dg <mode> [extra env...]: run delegate in a fresh repo, sandbox off
+  repo="$(mkrepo)"
+  out="$(cd "$repo" && env COUNCIL_HOME="$FIX" COUNCIL_STATE_DIR="$st" COUNCIL_DELEGATE_SANDBOX=off \
+    COUNCIL_TEST_WORKER_MODE="$1" "${@:2}" "$REPO/council" delegate "$taskf" 2>&1 </dev/null)"; rc=$?
+}
+
+dg ok
+br="$(printf '%s\n' "$out" | sed -n 's/^branch: //p')"
+if [ "$rc" = 0 ] && case "$out" in *"status: accepted"*"worker: worker"*"SELF-REPORT: fixed"*"git merge $br"*) true ;; *) false ;; esac &&
+   [ "$(git -C "$repo" rev-list --count "HEAD..$br")" = 1 ] && [ "$(git -C "$repo" show "$br:src/fix.txt")" = fixed ]
+then ok "delegate: the worker's change lands as one commit on its own branch"; else bad "delegate: happy path" "rc=$rc $out"; fi
+check "delegate: the user's checkout is untouched" "$(cat "$repo/src/fix.txt"):$(git -C "$repo" rev-parse --abbrev-ref HEAD)" "base:$(git -C "$repo" symbolic-ref --short HEAD)"
+check "delegate: the worktree is removed afterwards" "$(git -C "$repo" worktree list | wc -l | tr -d ' ')" "1"
+job="$(printf '%s\n' "$out" | sed -n 's/^job_dir: //p')"
+if [ -f "$job/diff.patch" ] && [ -f "$job/result" ] && grep -q '^accept_exit: 0$' "$job/result"; then ok "delegate: the job dir keeps the diff and the result"
+else bad "delegate: the job dir keeps the diff and the result" "$(ls "$job" 2>&1)"; fi
+rm -rf "$repo"
+
+for m in outside:"outside scope: docs/x.txt" forbidden:"forbidden: src/secret/k" protected:"protected: .gitignore"; do
+  dg "${m%%:*}"
+  case "$rc:$out" in 8:*"status: rejected-scope"*"${m#*:}"*) ok "delegate: ${m%%:*} change is rejected (exit 8)" ;;
+    *) bad "delegate: ${m%%:*} change is rejected (exit 8)" "rc=$rc $out" ;; esac
+  rm -rf "$repo"
+done
+dg failing
+case "$rc:$out" in 8:*"status: rejected-tests"*"fixed, tests pass"*) ok "delegate: a failing acceptance command rejects, whatever the worker claims" ;;
+  *) bad "delegate: a failing acceptance command rejects" "rc=$rc $out" ;; esac
+rm -rf "$repo"
+dg none
+case "$rc:$out" in 8:*"status: no-changes"*) ok "delegate: no changes -> exit 8, branch removed" ;; *) bad "delegate: no changes" "rc=$rc $out" ;; esac
+check "delegate: a no-change branch is deleted" "$(git -C "$repo" branch --list 'council/*' | wc -l | tr -d ' ')" "0"
+rm -rf "$repo"
+dg tamper
+case "$rc:$out" in 8:*"status: rejected-git-tamper"*) ok "delegate: a worker that rewrites the worktree's .git link is rejected" ;;
+  *) bad "delegate: git tamper" "rc=$rc $out" ;; esac
+rm -rf "$repo"
+dg crash
+case "$rc:$out" in 0:*"status: accepted"*"worker_exit: 6"*) ok "delegate: the worktree is judged even when the worker exits non-zero" ;;
+  *) bad "delegate: judged despite worker exit" "rc=$rc $out" ;; esac
+rm -rf "$repo"
+dg big COUNCIL_DELEGATE_MAX_LINES=100
+case "$rc:$out" in 8:*"status: rejected-size"*) ok "delegate: a diff over COUNCIL_DELEGATE_MAX_LINES is rejected" ;;
+  *) bad "delegate: size cap" "rc=$rc $out" ;; esac
+rm -rf "$repo"
+
+cap="$(mktemp)"
+dg ok COUNCIL_TEST_WORKER_CAPTURE="$cap"
+if grep -q "Change only files under: src/" "$cap" && grep -q "Never touch: src/secret/" "$cap" &&
+   grep -q "grep -q fixed src/fix.txt" "$cap" && grep -q "BEGIN TASK \[task " "$cap" && grep -q "Fix src/fix.txt" "$cap"
+then ok "delegate: the worker gets scope, forbidden paths, acceptance and the task"; else bad "delegate: worker prompt" "$(cat "$cap")"; fi
+rm -rf "$repo" "$cap"
+
+repo="$(mkrepo)"
+out="$(cd "$repo" && COUNCIL_HOME="$FIX" "$REPO/council" worker "x" 2>&1 </dev/null)"; rc=$?
+case "$rc:$out" in 2:*"runs only via: council delegate"*) ok "a worker cannot be called directly" ;; *) bad "a worker cannot be called directly" "rc=$rc $out" ;; esac
+sel="$(COUNCIL_HOME="$FIX" bash -c '. "$0/lib/common.sh"; . "$0/lib/registry.sh"; . "$0/lib/policy.sh"
+  for t in advise review arbitrate tiebreak synthesize finalize; do council_policy_select $t; done | tr "\n" " "' "$FIX")"
+case "$sel" in *worker*) bad "write-requires-isolation: a worker is never selected to advise or judge" "$sel" ;;
+  *) ok "write-requires-isolation: a worker is never selected to advise or judge" ;; esac
+printf 'scope: src/\n---\nno accept line\n' > "$taskf.noaccept"
+out="$(cd "$repo" && COUNCIL_HOME="$FIX" "$REPO/council" delegate "$taskf.noaccept" 2>&1 </dev/null)"; rc=$?
+case "$rc:$out" in 2:*"accept:"*) ok "delegate: a task without an acceptance command is refused" ;; *) bad "delegate: no accept refused" "rc=$rc $out" ;; esac
+d="$(mktemp -d)"
+out="$(cd "$d" && COUNCIL_HOME="$FIX" COUNCIL_STATE_DIR="$st" "$REPO/council" delegate "$taskf" 2>&1 </dev/null)"; rc=$?
+case "$rc:$out" in 2:*"inside a git repository"*) ok "delegate: outside a git repo it is refused" ;; *) bad "delegate outside a repo" "rc=$rc $out" ;; esac
+rm -rf "$repo" "$d" "$taskf.noaccept"
+
+# The acceptance sandbox, when this machine has a usable bubblewrap.
+if command -v bwrap >/dev/null 2>&1 && bwrap --ro-bind / / true >/dev/null 2>&1; then
+  esc="$(mktemp -d)"
+  printf 'scope: src/\naccept: grep -q fixed src/fix.txt && touch %s/escaped\n---\nFix it.\n' "$esc" > "$taskf.esc"
+  repo="$(mkrepo)"
+  out="$(cd "$repo" && COUNCIL_HOME="$FIX" COUNCIL_STATE_DIR="$st" COUNCIL_TEST_WORKER_MODE=ok "$REPO/council" delegate "$taskf.esc" 2>&1 </dev/null)"; rc=$?
+  if [ "$rc" = 8 ] && [ ! -e "$esc/escaped" ] && case "$out" in *"status: rejected-tests"*) true ;; *) false ;; esac
+  then ok "delegate: the acceptance command cannot write outside the worktree"; else bad "delegate: acceptance sandbox" "rc=$rc $out"; fi
+  rm -rf "$repo" "$esc" "$taskf.esc"
+else
+  ok "delegate: acceptance sandbox test skipped (no usable bwrap here)"
+fi
+rm -rf "$st" "$taskf"
 
 # ---------------------------------------------------------------- summary
 echo
