@@ -150,6 +150,18 @@ Review and merge yourself: `council review <job>/diff.patch`, then
 `git merge council/delegate/<job>`. A worker gets up to
 `COUNCIL_DELEGATE_TIMEOUT` seconds (default 900).
 
+Limits worth knowing:
+
+- The acceptance command must not depend on git: the sandbox gives it a
+  private `/tmp`, which hides a repository's git data if it lives there.
+- Without a usable bubblewrap (macOS, or Ubuntu 24.04+ without an AppArmor
+  user-namespace profile for `/usr/bin/bwrap`) every task is rejected, unless
+  you accept running the check unsandboxed with `COUNCIL_DELEGATE_SANDBOX=off`.
+- `council review` of the diff convenes the normal panel, which can include the
+  worker's own model family and sends the diff to every panel vendor.
+- Interrupting a run leaves its branch and worktree behind; clear them with
+  `git worktree prune` and `git branch -D council/delegate/<job>`.
+
 Read [SECURITY.md](SECURITY.md) before using it on sensitive code, and to report
 a problem.
 
