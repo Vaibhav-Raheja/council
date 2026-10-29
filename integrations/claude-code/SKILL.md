@@ -86,6 +86,9 @@ Fable changed anything, say what and whose decision it overrode.
   lost and why. The disagreement is usually worth more than the consensus.
 - If the council contradicts something I already told the user, say that
   plainly rather than quietly switching position.
+- Judges name advisors by letter (they never see model names). Translate
+  with the key on the output's first line, "Advisors (judges saw only the
+  letters): A = codex, ...".
 - Attribute: "Codex found X, Gemini found Y." Do not present their findings as
   my own.
 - Report the "Challenge to the consensus" section: what it attacked, and

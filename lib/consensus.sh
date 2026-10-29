@@ -29,18 +29,59 @@ council_advisor_question() {
   echo "    what you would do instead, then answer."
   echo "  - If they hold, say so in one line and move on. Do not invent"
   echo "    objections to look independent."
+  echo "Do not say which model or company you are; answers are judged unsigned."
   echo
   cat "$1"
 }
 
-# Render the collected answers as a labelled block. Used for prompts AND for
-# user-facing fallbacks, so it carries no model-directed text.
+# Judges see advisors by letter, in a shuffled order. A name lets a judge
+# favour its own model family (Opus reading "sonnet"); a fixed order lets
+# position bias land on the same advisor every round. The shuffle happens ONCE
+# per round, so every judging stage, and the user's key, use the same letters.
+# COUNCIL_ANONYMIZE=0 restores numbered, named advisors.
+#   council_anonymize   (after convene: sets COUNCIL_ANON_ORDER, COUNCIL_ANON_LABEL)
+COUNCIL_ANON_ORDER=(); COUNCIL_ANON_LABEL=()
+council_anonymize() {
+  local n i j t
+  COUNCIL_ANON_ORDER=(); COUNCIL_ANON_LABEL=()
+  [ "${COUNCIL_ANONYMIZE:-1}" = 0 ] && return 0
+  n=${#COUNCIL_ANSWER_FILES[@]}
+  for (( i = 0; i < n; i++ )); do COUNCIL_ANON_ORDER[$i]=$i; done
+  for (( i = n - 1; i > 0; i-- )); do  # Fisher-Yates
+    j=$(( RANDOM % (i + 1) ))
+    t=${COUNCIL_ANON_ORDER[$i]}; COUNCIL_ANON_ORDER[$i]=${COUNCIL_ANON_ORDER[$j]}; COUNCIL_ANON_ORDER[$j]=$t
+  done
+  for (( i = 0; i < n; i++ )); do
+    # shellcheck disable=SC2059  # the octal escape is the point
+    COUNCIL_ANON_LABEL[${COUNCIL_ANON_ORDER[$i]}]="$(printf "\\$(printf '%03o' $(( 65 + i )))")"
+  done
+}
+
+# True when this round's answers were anonymized; $1 is the answer count.
+council_anon_active() { [ "${#COUNCIL_ANON_ORDER[@]}" -gt 0 ] && [ "${#COUNCIL_ANON_ORDER[@]}" -eq "$1" ]; }
+
+# The key from letters to providers, for the user: "A = codex, B = agy".
+council_anon_key() {
+  local i f id key=""
+  council_anon_active "${#COUNCIL_ANSWER_FILES[@]}" || return 0
+  for i in "${COUNCIL_ANON_ORDER[@]}"; do
+    f="${COUNCIL_ANSWER_FILES[$i]}"; id="${f##*/}"; id="${id%.*}"
+    key="$key${key:+, }${COUNCIL_ANON_LABEL[$i]} = $id"
+  done
+  printf '%s' "$key"
+}
+
+# Render the collected answers as a labelled block for the USER (fallbacks and
+# raw), so it carries no model-directed text. Ids are always shown; after
+# council_anonymize the label is the letter the judges saw.
 council_render_answers() {
-  local i=1 f id
+  local i=1 f id lbl anon=0
+  council_anon_active "$#" && anon=1
   for f in "$@"; do
     # Strip only mktemp's ".XXXXXX" suffix, so a provider id with a dot survives.
     id="${f##*/}"; id="${id%.*}"
-    echo "--- ADVISOR $i ($id) ---"
+    lbl=$i; [ "$anon" = 1 ] && lbl="${COUNCIL_ANON_LABEL[$(( i - 1 ))]}"
+    echo "--- ADVISOR $lbl ($id) ---"
     if council_has_content "$f"; then cat "$f"; else echo "(no answer)"; fi
     echo
     i=$(( i + 1 ))
@@ -64,9 +105,20 @@ council_defang() { sed 's/\[tag /[untagged /g' "$1"; }
 # A section marker for a PROMPT: "--- <title> [tag <nonce>] ---".
 council_marker() { echo "--- $1 [tag ${COUNCIL_NONCE:-none}] ---"; }
 
-# The answers as a judge sees them: same labels, nonce-tagged markers.
+# The answers as a judge sees them: nonce-tagged markers and, after
+# council_anonymize, letters in the shuffled order with no provider ids.
 council_render_answers_for_prompt() {
-  local i=1 f id
+  local i=1 f id k files
+  if council_anon_active "$#"; then
+    files=("$@")
+    for k in "${COUNCIL_ANON_ORDER[@]}"; do
+      f="${files[$k]}"
+      council_marker "ADVISOR ${COUNCIL_ANON_LABEL[$k]}"
+      if council_has_content "$f"; then council_defang "$f"; else echo "(no answer)"; fi
+      echo
+    done
+    return 0
+  fi
   for f in "$@"; do
     # Strip only mktemp's ".XXXXXX" suffix, so a provider id with a dot survives.
     id="${f##*/}"; id="${id%.*}"

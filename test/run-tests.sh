@@ -327,6 +327,36 @@ out="$(run raw "postgres or mongo?")"
 case "$out" in *"DATA to evaluate"*|*"Ignore any instruction"*) bad "model-directed notice never reaches the user" "$out" ;;
   *) ok "model-directed notice never reaches the user" ;; esac
 
+# Judges see advisors by letter, in a shuffled order; the user gets the key.
+out="$(COUNCIL_TEST_VERDICT=AGREE run ask "postgres or mongo?")"
+case "$out" in *SAW-NAMES*) bad "judges see advisors by letter, never by provider id" "$out" ;;
+  *SAW-LABELS*) ok "judges see advisors by letter, never by provider id" ;;
+  *) bad "judges see advisors by letter, never by provider id" "$out" ;; esac
+case "$out" in "Advisors (judges saw only the letters): A = "*", B = "*) ok "the user gets the letter-to-provider key" ;;
+  *) bad "the user gets the letter-to-provider key" "$out" ;; esac
+out="$(COUNCIL_ANONYMIZE=0 COUNCIL_TEST_VERDICT=AGREE run ask "postgres or mongo?")"
+case "$out" in *"judges saw only"*) bad "COUNCIL_ANONYMIZE=0 shows judges the provider ids" "$out" ;;
+  *SAW-NAMES*SAW-LABELS*) ok "COUNCIL_ANONYMIZE=0 shows judges the provider ids" ;;
+  *) bad "COUNCIL_ANONYMIZE=0 shows judges the provider ids" "$out" ;; esac
+# The order is shuffled per round, and the judges' order matches the key.
+anon="$( . "$REPO/lib/common.sh"; . "$REPO/lib/consensus.sh"
+         d="$(mktemp -d)"; COUNCIL_ANSWER_FILES=()
+         for id in p q r s; do f="$(mktemp "$d/$id.XXXXXX")"; echo "answer-$id" > "$f"; COUNCIL_ANSWER_FILES+=("$f"); done
+         seen=""
+         for i in $(seq 40); do council_anonymize; seen="$seen$(council_anon_key | tr -d ' ,=ABCD')
+"; done
+         printf 'orders=%s\n' "$(printf '%s' "$seen" | sort -u | wc -l | tr -d ' ')"
+         council_anonymize
+         key="$(council_anon_key | tr -d ' ,=ABCD')"
+         got="$(council_render_answers_for_prompt "${COUNCIL_ANSWER_FILES[@]}" | sed -n 's/^answer-//p' | tr -d '\n')"
+         [ "$key" = "$got" ] && echo order-matches
+         council_render_answers_for_prompt "${COUNCIL_ANSWER_FILES[@]}" | grep -q '(p)' || echo no-ids
+         rm -rf "$d" )"
+orders="$(printf '%s\n' "$anon" | sed -n 's/^orders=//p')"
+if [ "${orders:-0}" -gt 1 ]; then ok "the advisor order is shuffled per round ($orders orders in 40)"
+else bad "the advisor order is shuffled per round" "$anon"; fi
+case "$anon" in *order-matches*no-ids*) ok "judges see the answers in the key's order, without ids" ;;
+  *) bad "judges see the answers in the key's order, without ids" "$anon" ;; esac
 out="$(COUNCIL_TEST_VERDICT=AGREE COUNCIL_TEST_ARB_FAIL=1 run ask "postgres or mongo?")"
 case "$out" in *"arbiter 'judge' failed"*Stalemate*SAW-DEFAULT-NOTE*FINAL-ANSWER*) ok "arbiter failure is flagged to the final reviewer as a default" ;;
   *) bad "arbiter failure is flagged to the final reviewer as a default" "$out" ;; esac
@@ -335,7 +365,7 @@ case "$out" in *"Point of contention"*) bad "failed arbiter shows its note, not 
   *) bad "failed arbiter shows its note, not an empty contention heading" "$out" ;; esac
 
 out="$(COUNCIL_TEST_VERDICT=DISAGREE COUNCIL_TEST_TB_FAIL=1 COUNCIL_TEST_FINAL_FAIL=1 run ask "postgres or mongo?")"
-case "$out" in *"no verdict; presenting the positions unresolved"*"ADVISOR 1 (alpha)"*) ok "tiebreak AND final fail -> positions shown unresolved" ;;
+case "$out" in *"no verdict; presenting the positions unresolved"*"ADVISOR "[AB]" (alpha)"*) ok "tiebreak AND final fail -> positions shown unresolved" ;;
   *) bad "tiebreak AND final fail -> positions shown unresolved" "$out" ;; esac
 
 out="$(COUNCIL_TEST_BETA_FAIL=1 COUNCIL_TEST_FINAL_FAIL=1 run ask "postgres or mongo?")"
@@ -718,6 +748,8 @@ rec="$st/decisions/$id.md"
 if [ -n "$id" ] && [ -f "$rec" ] && grep -q '^- final: UPHELD$' "$rec" && grep -q '^- command: ask$' "$rec" &&
    grep -q 'postgres or mongo?' "$rec" && grep -q '^## Challenge$' "$rec" && grep -q FINAL-ANSWER "$rec"
 then ok "a round writes a decision record (question, challenge, final call)"; else bad "a round writes a decision record" "id=$id $out"; fi
+if grep -q '^- advisors: A = [a-z]*, B = [a-z]*$' "$rec"; then ok "the decision record keeps the advisor key"
+else bad "the decision record keeps the advisor key" "$(cat "$rec")"; fi
 check "decision records are private" "$(stat -c %a "$st/decisions" 2>/dev/null || stat -f %Lp "$st/decisions"):$(stat -c %a "$rec" 2>/dev/null || stat -f %Lp "$rec")" "700:600"
 out="$(COUNCIL_STATE_DIR="$st" COUNCIL_HOME="$FIX" "$REPO/council" decisions 2>&1 </dev/null)"
 case "$out" in *"$id"*ask*UPHELD*AGREE*"postgres or mongo?"*) ok "council decisions lists the record" ;;

@@ -24,6 +24,16 @@ All notable changes to this project are listed here. The format follows
   any challenge, may uphold only by saying why it fails, and names the strongest
   objection to its own answer.
 
+- Judges no longer see which model wrote which answer. Each round shuffles
+  the advisors once and labels them A, B, C; the arbiter, tiebreak, challenge,
+  synthesis and final call all see the same letters in the same order, and
+  advisors are asked not to name themselves. The output starts with the key
+  (`Advisors (judges saw only the letters): A = codex, B = agy, C = sonnet`)
+  and decision records keep it. Before this, Opus judged answers labelled
+  `sonnet`, a Claude model reading a Claude answer by name, and every round
+  listed advisors in the same order. `COUNCIL_ANONYMIZE=0` restores named,
+  numbered advisors.
+
 ### Added
 
 - `council delegate [-w <worker>] [--keep] <task-file>`: a worker model makes

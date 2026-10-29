@@ -73,7 +73,9 @@ from your home folder or `/`.
    `AMENDED` or `OVERTURNED`, and writes the final answer.
 
 If Fable fails or is skipped, Opus's decision stands. A model never judges a
-round it answered in. [docs/how-it-works.md](docs/how-it-works.md) covers the
+round it answered in, and judges never see which model wrote which answer:
+they get the answers as Advisor A, B, C in a shuffled order, and the output
+starts with the key. [docs/how-it-works.md](docs/how-it-works.md) covers the
 details.
 
 ## Configuration
@@ -85,6 +87,7 @@ Set these as environment variables.
 | `COUNCIL_CALL_TIMEOUT` | `240` | Seconds one model call may take (`0` for no limit) |
 | `COUNCIL_ROUND_TIMEOUT` | `540` | Seconds a whole round may take (`0` for no limit) |
 | `COUNCIL_SKIP_FINAL` | off | Set to `1` to skip the final reviewer |
+| `COUNCIL_ANONYMIZE` | on | Set to `0` to show judges each advisor's model name |
 | `COUNCIL_ALLOW_BROAD_CWD` | off | Set to `1` to allow running from your home folder or `/` |
 | `COUNCIL_MAX_HOPS` | `2` | How many times `council` may call itself (up to 98) |
 | `COUNCIL_DEBUG` | off | Set to `1` to print which model was picked for what |

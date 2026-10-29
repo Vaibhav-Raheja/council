@@ -17,8 +17,9 @@ council_decisions_dir() {
 #   council_record_decision <command> <question-file> <verdict> <final-word|"">
 #                           <answer-file> <challenge-file|""> <revisits-id|"">
 council_record_decision() {
-  local cmd qfile verdict word answer challenge revisits dir id f
+  local cmd qfile verdict word answer challenge revisits advisors dir id f
   cmd="$1"; qfile="$2"; verdict="$3"; word="$4"; answer="$5"; challenge="$6"; revisits="$7"
+  advisors="${8:-}"
   [ "${COUNCIL_NO_RECORD:-0}" = 1 ] && return 0
   [ "$(council_hop_depth)" -gt 0 ] && return 0
   council_has_content "$answer" || return 0
@@ -36,6 +37,7 @@ council_record_decision() {
       echo "- verdict: $verdict"
       echo "- final: ${word:-none}"
       [ -n "$revisits" ] && echo "- revisits: $revisits"
+      [ -n "$advisors" ] && echo "- advisors: $advisors"
       echo
       echo "## Question"
       echo

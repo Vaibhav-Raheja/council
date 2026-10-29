@@ -77,6 +77,7 @@ Env
   COUNCIL_MAX_HOPS   recursion ceiling for self-invocation (default 2)
   COUNCIL_SKIP_FINAL=1  skip the final reviewer; the judge's decision stands
   COUNCIL_SKIP_CHALLENGE=1  skip the attack on an agreeing panel's consensus
+  COUNCIL_ANONYMIZE=0   show judges each advisor's provider id (default: letters, shuffled)
   COUNCIL_NO_RECORD=1   do not write a decision record for this round
   COUNCIL_STATE_DIR     decision records, delegate jobs and worktrees (default ~/.local/state/council)
   COUNCIL_DELEGATE_TIMEOUT  worker time limit in seconds (default 900)
@@ -126,6 +127,7 @@ convene() {
     pids="$pids $!"
   done
   for p in $pids; do wait "$p" 2>/dev/null; done
+  council_anonymize
 }
 
 answered_count() {
@@ -165,7 +167,7 @@ pick_judge() {
 
 cmd_ask() {
   local q qfile aqfile panel n verdict arb out fin chal RESERVED ARBITER FINAL TB CH decision challenge f
-  local rec_answer="" rec_word="" rec_id
+  local rec_answer="" rec_word="" rec_id anon_key
   refuse_model_for_panel
   council_preflight_warnings
   q="$(read_question "$@")"
@@ -187,6 +189,10 @@ cmd_ask() {
     echo "council: no advisor produced an answer. Run: council doctor" >&2
     rm -f "$qfile" "$aqfile"; cleanup_answers; exit 5
   fi
+
+  # Judges name advisors by letter; this is the only place the letters meet ids.
+  anon_key="$(council_anon_key)"
+  if [ -n "$anon_key" ]; then echo "Advisors (judges saw only the letters): $anon_key"; echo; fi
 
   arb="$(mktemp)"; out="$(mktemp)"; fin="$(mktemp)"; chal="$(mktemp)"
   ARBITER=""; TB=""; CH=""; decision=""; challenge=""
@@ -290,7 +296,7 @@ cmd_ask() {
   # An unresolved stalemate decided nothing, so it leaves no record.
   if [ -n "$rec_answer" ]; then
     rec_id="$(council_record_decision "${RECORD_CMD:-ask}" "$qfile" "$verdict" "$rec_word" \
-                "$rec_answer" "$challenge" "${RECORD_REVISITS:-}")"
+                "$rec_answer" "$challenge" "${RECORD_REVISITS:-}" "$anon_key")"
     [ -n "$rec_id" ] && council_warn "recorded as decision $rec_id (reopen with: council revisit $rec_id)"
   fi
   rm -f "$qfile" "$aqfile" "$arb" "$out" "$fin" "$chal"; cleanup_answers
