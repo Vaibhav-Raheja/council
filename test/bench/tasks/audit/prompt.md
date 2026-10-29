@@ -1,0 +1,1 @@
+Audit the `billing/` package against `RULES.md` and fix every place where the code disagrees with the documentation. Do not change `RULES.md`, and do not change code that already matches it. Only change files under `billing/` and `tests/`. When done, list each mismatch you found.

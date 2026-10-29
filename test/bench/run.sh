@@ -56,6 +56,10 @@ mkdir -p "$S/hidden_tests"; cp -r "$R/hidden/." "$S/hidden_tests/"
 res="$(cd "$S" && timeout 120 python3 -m pytest -q -p no:cacheprovider hidden_tests 2>&1 | tail -1)"
 own="$(cd "$S" && timeout 120 python3 -m pytest -q -p no:cacheprovider tests 2>&1 | tail -1)"
 
-printf '%s\t%s\trc=%s\t%ss\thidden: %s\town: %s\tfiles=%s\toutside_scope=%s\n' \
-  "$task" "$worker" "$rc" "$secs" "$res" "$own" "$(echo $changed | wc -w)" "${outside:-none}" \
+# Lines added plus removed, ignoring caches: a fix can pass and still sprawl.
+lines="$(git -C "$W" diff --numstat "$base" -- . ':!*__pycache__*' ':!.pytest_cache' \
+  | awk '{n += $1 + $2} END {print n + 0}')"
+
+printf '%s\t%s\trc=%s\t%ss\thidden: %s\town: %s\tfiles=%s\tlines=%s\toutside_scope=%s\n' \
+  "$task" "$worker" "$rc" "$secs" "$res" "$own" "$(echo $changed | wc -w)" "$lines" "${outside:-none}" \
   | tee -a "$out/results.tsv"

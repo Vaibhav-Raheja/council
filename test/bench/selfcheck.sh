@@ -15,7 +15,7 @@ prep() {  # prep <task> <dir>
 }
 hidden() { (cd "$1" && python3 -m pytest -q -p no:cacheprovider hidden_tests >/dev/null 2>&1); }
 
-for t in implement refactor debug largectx; do
+for t in ${BENCH_TASKS:-implement refactor debug largectx rootcause convention audit}; do
   d="$TMP/$t-base"; mkdir -p "$d"; prep "$t" "$d"
   if hidden "$d"; then echo "BAD   $t: hidden tests pass on the untouched repo"; fail=1
   else echo "ok    $t: hidden tests fail on base"; fi

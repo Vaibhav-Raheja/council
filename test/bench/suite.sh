@@ -3,6 +3,6 @@
 # rate limits from being misread as task failures).
 #   suite.sh <codex|agy|sonnet> <outdir>
 BENCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for t in implement refactor debug largectx; do
+for t in ${BENCH_TASKS:-implement refactor debug largectx rootcause convention audit}; do
   "$BENCH/run.sh" "$1" "$t" "$2"
 done
