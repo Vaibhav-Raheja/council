@@ -19,6 +19,16 @@ are checked, how the prompts resist tampering, and how time limits work.
    `UPHELD`, `AMENDED` or `OVERTURNED`, explains briefly, and writes the answer
    under a `## Final answer` heading.
 
+Judges never see which model wrote which answer. After the panel answers, the
+round shuffles the answers once and labels them Advisor A, B, C. Every judging
+stage sees the same letters in the same order, so the arbiter, the tiebreak
+and the final call can refer to each other's reasoning. Advisors are asked not
+to name themselves. The output starts with the key from letters to models, and
+the decision record keeps it. Without this, Opus would judge an answer
+labelled `sonnet` (one Claude model reading another by name), and the same
+advisor would always come first. The limit: a model can still recognise an
+answer's style, which names cannot hide. `COUNCIL_ANONYMIZE=0` turns it off.
+
 Fallbacks:
 
 - If only one advisor answers, there is nothing to judge. The final reviewer

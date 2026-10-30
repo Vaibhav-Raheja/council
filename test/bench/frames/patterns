@@ -1,0 +1,5 @@
+q1-decided	each (worker|process)|per-process|not shared|separate (process|memory)|other workers|across (workers|processes)|redis|shared cache|TTL
+q2-premise	selectiv|cardinality|won.t (help|use)|not help|seq(uential)? scan|partial index|covering|INCLUDE|materiali[sz]ed|a third of
+q4-replay	measure (first|before)|benchmark|before (building|you build)|test (the|each|your) (existing |current )?workers?|(claude|sonnet)('s own)? (sub-?agents?|workers?)|option 0|(may|might) not (be worth|need)|do(n.t| not) build (anything|delegate)
+q5-goal	overkill|over-?engineer|200 (messages|a day)|too (small|low|little)|(don.t|do not|probably don.t) need kafka|simpler|without kafka|instead of kafka|(postgres|database).{0,30}(queue|table|outbox)|SQS|plain HTTP|cron
+q3-optionsneither|\.backup|VACUUM INTO|backup API|sqlite3_backup|sqlite3 .*backup|consistent (copy|snapshot)|checkpoint|-wal

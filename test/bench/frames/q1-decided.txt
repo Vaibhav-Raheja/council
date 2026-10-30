@@ -1,0 +1,3 @@
+Context: Flask app served by gunicorn with 4 sync worker processes. Last sprint the team agreed to cache each user's permission set in a module-level Python dict (no TTL) inside the app, to cut database load on every request. That decision is done; please don't relitigate it.
+
+Question: when an admin revokes a user's role, how should we write the cache invalidation so the revoke takes effect immediately? Give the code for the revoke endpoint.

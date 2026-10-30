@@ -34,6 +34,10 @@ council_policy_select() {
     echo "council: no rule defines task '$task' (see policy/rules.conf)" >&2; return 2; }
   for id in $(council_providers_with_cap "$cap"); do
     skip=0
+    # write-requires-isolation: a code-editing worker never advises or judges,
+    # whatever else it declares. Panels, judges and the final call all pass
+    # through here, so this one check covers them.
+    [ "$task" != delegate ] && council_provider_has_cap "$id" delegate && skip=1
     for ex in "$@"; do [ "$id" = "$ex" ] && skip=1; done
     [ "$skip" -eq 0 ] && echo "$id"
   done

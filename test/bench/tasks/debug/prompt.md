@@ -1,0 +1,1 @@
+`tests/test_intervals.py::test_merge_unsorted` is failing. Find the root cause in `intervals.py` and fix it properly; do not special-case the test. While you are there, check `merge` for related bugs and fix those too. Only change `intervals.py` and files under `tests/`.

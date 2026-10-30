@@ -6,6 +6,65 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Advisors now test the question before answering it. They name the premises,
+  "already decided" constraints, proposed answer and option set it takes for
+  granted, and say first if one is wrong. Judges still see the question as
+  asked. On a "Kafka for 200 messages a day" question, all three advisors now
+  lead with the Kafka doubt instead of one, and the final answer changed from
+  "use managed Kafka" to "don't run Kafka for this".
+- Agreement no longer ends the debate. When the panel agrees, or only one
+  advisor answers, a model outside the panel must attack the consensus with
+  evidence (or reply `NO MATERIAL FLAW`) before the final call. Set
+  `COUNCIL_SKIP_CHALLENGE=1` to skip it; it is skipped automatically when under
+  150 s of the round remain.
+- The arbiter also records whether the advisors only echoed the question's
+  framing (`FRAME: ECHOED` or `FRAME: TESTED`). The final reviewer must engage
+  any challenge, may uphold only by saying why it fails, and names the strongest
+  objection to its own answer.
+
+- Judges no longer see which model wrote which answer. Each round shuffles
+  the advisors once and labels them A, B, C; the arbiter, tiebreak, challenge,
+  synthesis and final call all see the same letters in the same order, and
+  advisors are asked not to name themselves. The output starts with the key
+  (`Advisors (judges saw only the letters): A = codex, B = agy, C = sonnet`)
+  and decision records keep it. Before this, Opus judged answers labelled
+  `sonnet`, a Claude model reading a Claude answer by name, and every round
+  listed advisors in the same order. `COUNCIL_ANONYMIZE=0` restores named,
+  numbered advisors.
+
+### Added
+
+- `council delegate [-w <worker>] [--keep] <task-file>`: a worker model makes
+  a code change in a fresh git worktree on its own branch, and council decides
+  whether to keep it without trusting the worker. The diff must stay inside the
+  task's `scope:`, avoid `forbid:` and a protected list (git metadata, CI,
+  hooks, lockfiles, `.env`, `policy/`), keep the worktree's git link intact and
+  stay under `COUNCIL_DELEGATE_MAX_LINES`; council then commits and runs the
+  task's `accept:` command under bubblewrap with no network and only the
+  worktree writable. Exit 0 accepted, 8 rejected. Nothing is merged for you.
+- Worker providers `codex-worker` (reads and writes only its worktree; network,
+  web search, apps and browser off) and `sonnet-worker` (file tools only, no
+  shell). A new invariant, `write-requires-isolation`, keeps workers off every
+  panel and judging seat, refuses calling them directly, and `doctor` skips
+  them. Live check: both fixed the benchmark's debug task, including its
+  hidden second bug.
+- Decision records. Every top-level `ask`, `review` and `revisit` round that
+  decides something writes a private Markdown record (question, challenge,
+  final call) under `~/.local/state/council/decisions` (`COUNCIL_STATE_DIR`;
+  `COUNCIL_NO_RECORD=1` skips it). `council decisions` lists them.
+- `council revisit <id|file> [evidence]`: reopen a past decision with new
+  evidence. A fresh panel must first give the strongest reasons it may now be
+  wrong, then rule STAND, CHANGE or REVERSE. The new round records a link to
+  the one it reopened. Takes a hand-written file for decisions made before
+  records existed.
+- `test/bench/frames/`: a frame-trap eval that checks whether advisors
+  challenge a planted premise, a false "already decided" constraint or a
+  closed option set.
+- `test/bench/`: a delegation benchmark for worker CLIs, with hidden tests and
+  sandbox-escape canaries.
+
 ## [0.1.0]
 
 First public release.

@@ -44,6 +44,9 @@ You sign in to each tool with your normal account. No API key is needed.
 | `council review <file>...` | Have the panel review files |
 | `council explore <dir> "<question>"` | Let one model read a folder itself and answer |
 | `council <model> "<question>"` | Ask one model directly, for example `council codex "..."` |
+| `council delegate <task-file>` | Have a worker model make a code change on its own branch, checked and tested by council |
+| `council decisions` | List what past rounds decided |
+| `council revisit <id\|file> ["<new evidence>"]` | Reopen a past decision with a fresh panel |
 | `council providers` | List the models and whether they are installed |
 | `council roles` | Show what each model is good at |
 | `council rules` | Show the routing rules |
@@ -70,7 +73,9 @@ from your home folder or `/`.
    `AMENDED` or `OVERTURNED`, and writes the final answer.
 
 If Fable fails or is skipped, Opus's decision stands. A model never judges a
-round it answered in. [docs/how-it-works.md](docs/how-it-works.md) covers the
+round it answered in, and judges never see which model wrote which answer:
+they get the answers as Advisor A, B, C in a shuffled order, and the output
+starts with the key. [docs/how-it-works.md](docs/how-it-works.md) covers the
 details.
 
 ## Configuration
@@ -82,6 +87,7 @@ Set these as environment variables.
 | `COUNCIL_CALL_TIMEOUT` | `240` | Seconds one model call may take (`0` for no limit) |
 | `COUNCIL_ROUND_TIMEOUT` | `540` | Seconds a whole round may take (`0` for no limit) |
 | `COUNCIL_SKIP_FINAL` | off | Set to `1` to skip the final reviewer |
+| `COUNCIL_ANONYMIZE` | on | Set to `0` to show judges each advisor's model name |
 | `COUNCIL_ALLOW_BROAD_CWD` | off | Set to `1` to allow running from your home folder or `/` |
 | `COUNCIL_MAX_HOPS` | `2` | How many times `council` may call itself (up to 98) |
 | `COUNCIL_DEBUG` | off | Set to `1` to print which model was picked for what |
@@ -108,6 +114,56 @@ the main code are needed. See [docs/adding-a-provider.md](docs/adding-a-provider
 - **Files under review are marked as data,** so a file cannot easily pose as
   instructions. This makes tricks harder; it does not make them impossible.
 - **Each run's temporary files are deleted,** including when you press Ctrl-C.
+- **`delegate` is the only command that writes code,** and only through a
+  worker provider (`codex-worker`, `sonnet-worker`) that never sits on a panel
+  or judges. The worker edits a separate worktree on its own branch; your
+  checkout is never touched and nothing is merged for you. See below.
+
+## Delegating a change
+
+Write a task file:
+
+```
+scope: src/ tests/
+forbid: src/vendor/
+accept: python3 -m pytest -q tests
+---
+test_merge_unsorted fails. Fix the root cause in src/intervals.py.
+```
+
+Then, from inside the repository, `council delegate task.md`. Council:
+
+1. creates a worktree on a new branch `council/delegate/<job>` from `HEAD`
+   (uncommitted changes are not included; it warns);
+2. hands the task to the best available worker (`-w` picks one): `codex-worker`
+   reads and writes only the worktree, with no network and no web tools;
+   `sonnet-worker` has file tools only and no shell;
+3. rejects the change if it leaves `scope`, touches `forbid`, touches git
+   metadata, CI, hooks, lockfiles, `.env` or `policy/` without the scope naming
+   them, rewrites the worktree's git link, or exceeds
+   `COUNCIL_DELEGATE_MAX_LINES`;
+4. commits on the branch and runs `accept` under bubblewrap: no network, only
+   the worktree writable. Without a usable bubblewrap it refuses
+   (`COUNCIL_DELEGATE_SANDBOX=off` overrides, unsandboxed);
+5. prints the result, diffstat, acceptance output and the worker's summary,
+   labelled untrusted. Exit 0 means accepted, 8 rejected. The job's prompt,
+   diff and logs stay in `~/.local/state/council/delegate/<job>/`.
+
+Review and merge yourself: `council review <job>/diff.patch`, then
+`git merge council/delegate/<job>`. A worker gets up to
+`COUNCIL_DELEGATE_TIMEOUT` seconds (default 900).
+
+Limits worth knowing:
+
+- The acceptance command must not depend on git: the sandbox gives it a
+  private `/tmp`, which hides a repository's git data if it lives there.
+- Without a usable bubblewrap (macOS, or Ubuntu 24.04+ without an AppArmor
+  user-namespace profile for `/usr/bin/bwrap`) every task is rejected, unless
+  you accept running the check unsandboxed with `COUNCIL_DELEGATE_SANDBOX=off`.
+- `council review` of the diff convenes the normal panel, which can include the
+  worker's own model family and sends the diff to every panel vendor.
+- Interrupting a run leaves its branch and worktree behind; clear them with
+  `git worktree prune` and `git branch -D council/delegate/<job>`.
 
 Read [SECURITY.md](SECURITY.md) before using it on sensitive code, and to report
 a problem.

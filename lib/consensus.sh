@@ -12,14 +12,76 @@
 # The caller selects each judge ONCE and passes its id in, so the id it logs
 # and reports is always the one that ran.
 
-# Render the collected answers as a labelled block. Used for prompts AND for
-# user-facing fallbacks, so it carries no model-directed text.
+# What every advisor sees above the question. Without it advisors accept the
+# asker's frame (its premises, "already decided" constraints, proposed answer
+# and option set) and only debate inside it. The last line guards against the
+# opposite failure: objections manufactured to look independent.
+#   council_advisor_question <question-file>   (prints the advisor prompt)
+council_advisor_question() {
+  echo "Before you answer, test the question itself:"
+  echo "  - Name the premises, constraints and earlier decisions it takes for"
+  echo "    granted, including anything described as already decided or agreed,"
+  echo "    and any answer the asker proposes. Treat each as a claim to check,"
+  echo "    not a fact."
+  echo "  - If the question offers a fixed set of options, check whether the"
+  echo "    best answer lies outside it."
+  echo "  - If any of these is wrong or weaker than it looks, say so FIRST, say"
+  echo "    what you would do instead, then answer."
+  echo "  - If they hold, say so in one line and move on. Do not invent"
+  echo "    objections to look independent."
+  echo "Do not say which model or company you are; answers are judged unsigned."
+  echo
+  cat "$1"
+}
+
+# Judges see advisors by letter, in a shuffled order. A name lets a judge
+# favour its own model family (Opus reading "sonnet"); a fixed order lets
+# position bias land on the same advisor every round. The shuffle happens ONCE
+# per round, so every judging stage, and the user's key, use the same letters.
+# COUNCIL_ANONYMIZE=0 restores numbered, named advisors.
+#   council_anonymize   (after convene: sets COUNCIL_ANON_ORDER, COUNCIL_ANON_LABEL)
+COUNCIL_ANON_ORDER=(); COUNCIL_ANON_LABEL=()
+council_anonymize() {
+  local n i j t
+  COUNCIL_ANON_ORDER=(); COUNCIL_ANON_LABEL=()
+  [ "${COUNCIL_ANONYMIZE:-1}" = 0 ] && return 0
+  n=${#COUNCIL_ANSWER_FILES[@]}
+  for (( i = 0; i < n; i++ )); do COUNCIL_ANON_ORDER[$i]=$i; done
+  for (( i = n - 1; i > 0; i-- )); do  # Fisher-Yates
+    j=$(( RANDOM % (i + 1) ))
+    t=${COUNCIL_ANON_ORDER[$i]}; COUNCIL_ANON_ORDER[$i]=${COUNCIL_ANON_ORDER[$j]}; COUNCIL_ANON_ORDER[$j]=$t
+  done
+  for (( i = 0; i < n; i++ )); do
+    # shellcheck disable=SC2059  # the octal escape is the point
+    COUNCIL_ANON_LABEL[${COUNCIL_ANON_ORDER[$i]}]="$(printf "\\$(printf '%03o' $(( 65 + i )))")"
+  done
+}
+
+# True when this round's answers were anonymized; $1 is the answer count.
+council_anon_active() { [ "${#COUNCIL_ANON_ORDER[@]}" -gt 0 ] && [ "${#COUNCIL_ANON_ORDER[@]}" -eq "$1" ]; }
+
+# The key from letters to providers, for the user: "A = codex, B = agy".
+council_anon_key() {
+  local i f id key=""
+  council_anon_active "${#COUNCIL_ANSWER_FILES[@]}" || return 0
+  for i in "${COUNCIL_ANON_ORDER[@]}"; do
+    f="${COUNCIL_ANSWER_FILES[$i]}"; id="${f##*/}"; id="${id%.*}"
+    key="$key${key:+, }${COUNCIL_ANON_LABEL[$i]} = $id"
+  done
+  printf '%s' "$key"
+}
+
+# Render the collected answers as a labelled block for the USER (fallbacks and
+# raw), so it carries no model-directed text. Ids are always shown; after
+# council_anonymize the label is the letter the judges saw.
 council_render_answers() {
-  local i=1 f id
+  local i=1 f id lbl anon=0
+  council_anon_active "$#" && anon=1
   for f in "$@"; do
     # Strip only mktemp's ".XXXXXX" suffix, so a provider id with a dot survives.
     id="${f##*/}"; id="${id%.*}"
-    echo "--- ADVISOR $i ($id) ---"
+    lbl=$i; [ "$anon" = 1 ] && lbl="${COUNCIL_ANON_LABEL[$(( i - 1 ))]}"
+    echo "--- ADVISOR $lbl ($id) ---"
     if council_has_content "$f"; then cat "$f"; else echo "(no answer)"; fi
     echo
     i=$(( i + 1 ))
@@ -43,9 +105,20 @@ council_defang() { sed 's/\[tag /[untagged /g' "$1"; }
 # A section marker for a PROMPT: "--- <title> [tag <nonce>] ---".
 council_marker() { echo "--- $1 [tag ${COUNCIL_NONCE:-none}] ---"; }
 
-# The answers as a judge sees them: same labels, nonce-tagged markers.
+# The answers as a judge sees them: nonce-tagged markers and, after
+# council_anonymize, letters in the shuffled order with no provider ids.
 council_render_answers_for_prompt() {
-  local i=1 f id
+  local i=1 f id k files
+  if council_anon_active "$#"; then
+    files=("$@")
+    for k in "${COUNCIL_ANON_ORDER[@]}"; do
+      f="${files[$k]}"
+      council_marker "ADVISOR ${COUNCIL_ANON_LABEL[$k]}"
+      if council_has_content "$f"; then council_defang "$f"; else echo "(no answer)"; fi
+      echo
+    done
+    return 0
+  fi
   for f in "$@"; do
     # Strip only mktemp's ".XXXXXX" suffix, so a provider id with a dot survives.
     id="${f##*/}"; id="${id%.*}"
@@ -129,6 +202,11 @@ council_arbitrate() {
     echo "or different wording for the same recommendation is AGREEMENT."
     echo
     echo "Reply with exactly one word on the FIRST line: AGREE or DISAGREE."
+    echo "On the SECOND line write 'FRAME: ECHOED' if every advisor adopted the"
+    echo "question's premises, stated decisions, proposed answer or option set"
+    echo "without testing them, or 'FRAME: TESTED' if at least one checked them."
+    echo "Agreement that only ratifies the asker's framing is still AGREE, but it"
+    echo "is not evidence the framing is right; the FRAME line records that."
     echo "Then, briefly, the single most important point of contention (or of"
     echo "agreement). Do not resolve the dispute — only classify it."
     echo
@@ -170,7 +248,8 @@ council_tiebreak() {
     echo "You are the deciding vote. Settle it."
     echo
     echo "Rules for your verdict:"
-    echo "  - Pick a side, or state a third position if both are wrong."
+    echo "  - Pick a side, or state a third position if both are wrong, including"
+    echo "    when every side accepted a premise of the question that is false."
     echo "  - Say WHY the losing position loses, in one or two sentences."
     echo "  - If the dispute turns on a fact you cannot verify, say so and give"
     echo "    the decision rule the reader should apply instead of guessing."
@@ -188,11 +267,51 @@ council_tiebreak() {
   return $rc
 }
 
+# Attack an agreement before it is accepted. AGREE used to end the debate, so a
+# consensus that merely ratified the asker's framing went unexamined. The
+# challenger is a provider outside the panel (the would-be tiebreaker, idle on
+# an agreeing round); a panel advisor told to dissent would dissent regardless.
+#   council_challenge <challenger> <question> <arbiter-out> <out>
+council_challenge() {
+  local ch question_file arb out prompt rc
+  ch="$1"; question_file="$2"; arb="$3"; out="$4"
+  [ -n "$ch" ] || { council_warn "no eligible challenger outside the advisor panel"; return 1; }
+  council_log "challenger: $ch"
+
+  council_new_nonce
+  prompt="$(mktemp)"
+  {
+    echo "ATTACK THE CONSENSUS. The advisors below agree. You were not one of"
+    echo "them. Before their answer is accepted, make the strongest honest case"
+    echo "that it is wrong. Look first at what they all took for granted: the"
+    echo "question's premises, any earlier decision it cites as settled, the"
+    echo "answer it proposes, and the options it offers."
+    echo
+    echo "Rules:"
+    echo "  - Name the specific claim or premise you attack, and the fact, test or"
+    echo "    measurement that would settle it. Evidence, not rhetoric."
+    echo "  - If a better answer lies outside what everyone considered, give it."
+    echo "  - If after a real attempt you find no material flaw, put exactly"
+    echo "    NO MATERIAL FLAW on the first line and say in one sentence what"
+    echo "    you checked. Do not manufacture an objection."
+    echo
+    echo "QUESTION:"; cat "$question_file"; echo
+    council_data_notice
+    [ -n "$arb" ] && [ -s "$arb" ] && { council_marker "ARBITER'S RULING"; council_defang "$arb"; echo; }
+    council_render_answers_for_prompt "${COUNCIL_ANSWER_FILES[@]}"
+  } > "$prompt"
+
+  council_invoke "$ch" "" "" < "$prompt" > "$out"
+  rc=$?
+  rm -f "$prompt"
+  return $rc
+}
+
 # Merge agreeing answers into one. The caller picks the chair (never an advisor).
-#   council_synthesize <chair> <question> <out>
+#   council_synthesize <chair> <question> <out> [challenge-out]
 council_synthesize() {
-  local chair question_file out prompt rc
-  chair="$1"; question_file="$2"; out="$3"
+  local chair question_file out challenge prompt rc
+  chair="$1"; question_file="$2"; out="$3"; challenge="${4:-}"
   [ -n "$chair" ] || { council_warn "no eligible chair to synthesise"; return 1; }
   council_log "chair: $chair"
   council_new_nonce
@@ -204,10 +323,15 @@ council_synthesize() {
     echo "Write ONE answer. State the shared conclusion plainly. Where advisors"
     echo "differ in emphasis, say which framing is better supported and why."
     echo "Do not invent consensus that is not there, and do not pad."
+    echo "If a CHALLENGE section appears, address it: say whether it holds and"
+    echo "change the answer if it does."
     echo
     echo "QUESTION:"; cat "$question_file"; echo
     council_data_notice
     council_render_answers_for_prompt "${COUNCIL_ANSWER_FILES[@]}"
+    if [ -n "$challenge" ] && [ -s "$challenge" ]; then
+      council_marker "CHALLENGE"; council_defang "$challenge"; echo
+    fi
   } > "$prompt"
   council_invoke "$chair" "" "" < "$prompt" > "$out"
   rc=$?
@@ -217,10 +341,11 @@ council_synthesize() {
 
 # Final call: review every decision of the round and return the answer.
 # Returns 7 when the reply is not a well-formed final call.
-#   council_finalize <reviewer> <question> <arbiter-out|""> <decision-out|""> <decider|""> <out>
+#   council_finalize <reviewer> <question> <arbiter-out|""> <decision-out|""> <decider|""> <out> [challenge-out] [challenger]
 council_finalize() {
-  local fin question_file arb decision decider out prompt rc word
+  local fin question_file arb decision decider out challenge challenger prompt rc word
   fin="$1"; question_file="$2"; arb="$3"; decision="$4"; decider="$5"; out="$6"
+  challenge="${7:-}"; challenger="${8:-challenger}"
   council_log "final: $fin"
 
   council_new_nonce
@@ -239,6 +364,11 @@ council_finalize() {
     echo "  - If only one advisor answered, check that answer on its own merits."
     echo "  - If they agreed, is the shared conclusion actually correct, and which"
     echo "    advisor's framing is best supported?"
+    echo "  - Check the question's own premises and any earlier decision it cites"
+    echo "    as settled. Agreement that only ratified the asker's framing (the"
+    echo "    arbiter's FRAME line says ECHOED) is not evidence that it is right."
+    echo "  - If there is a CHALLENGE section, engage it on the evidence. UPHELD is"
+    echo "    only allowed if you can say why the challenge fails."
     echo
     echo "Reply format, strictly:"
     echo "  Line 1: exactly one word, nothing else on the line."
@@ -247,6 +377,8 @@ council_finalize() {
     echo "    OVERTURNED a decision was wrong and the answer changes"
     echo "  Then 1-3 sentences on what you checked and, unless UPHELD, what changed"
     echo "  and why. Name advisors by their label."
+    echo "  Then one line starting 'Strongest objection:' naming the best case"
+    echo "  against your answer and why it does or does not change it."
     echo "  Then a line '## Final answer' and the answer itself, written for the"
     echo "  person who asked: plain, specific, no padding. Do not invent a consensus"
     echo "  that is not there. If the answer depends on a fact nobody can verify,"
@@ -260,6 +392,9 @@ council_finalize() {
     fi
     if [ -n "$decision" ] && [ -s "$decision" ]; then
       council_marker "TIEBREAK VERDICT (${decider:-tiebreaker})"; council_defang "$decision"; echo
+    fi
+    if [ -n "$challenge" ] && [ -s "$challenge" ]; then
+      council_marker "CHALLENGE ($challenger)"; council_defang "$challenge"; echo
     fi
   } > "$prompt"
   council_invoke "$fin" "" "" < "$prompt" > "$out"

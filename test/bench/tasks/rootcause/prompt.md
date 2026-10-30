@@ -1,0 +1,1 @@
+`tests/test_report.py::test_weekly_totals_sunday` is failing. Find the root cause and fix it properly, so every caller gets correct behaviour, not just this test. Weeks are ISO weeks: Monday through Sunday. Only change files under `reports/` and `tests/`.
